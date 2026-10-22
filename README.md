@@ -17,6 +17,19 @@ unity while the host is stopped to reduce transport-start clicks. Recovery
 curve tension ranges from 0.2 to 1.5; 1.0 maps to a linear power of 1, while
 the maximum setting maps to a power of 2.5.
 
+Processing can be switched between Singleband and Multiband. Singleband routes
+the envelope directly to the full-range signal, bypassing the crossover DSP;
+mode changes crossfade over 3 ms. Multiband uses a stereo, fourth-order
+Linkwitz-Riley crossover in a separate lower panel. Its input spectrum is
+displayed with a 2048-point Hann-windowed FFT, and the Low-Mid and Mid-High
+crossover handles are draggable there. Each band has an independent duck
+amount, bypass, and solo control; the Mix control scales the combined band
+ducking depth. Band amounts display and operate over a 0-100% range. The audio
+sidechain input is enabled by default; select Audio Trigger and route a signal
+to that input to retrigger the envelope. The crossover panel is greyed out while Singleband is selected.
+The top-bar SINGLE/MULTI buttons select the processing mode, and mode changes
+crossfade over 3 ms.
+
 The header preset selector navigates XML presets stored in
 `Documents/StepBloom/Presets`. The settings menu can save a named preset or
 store a default preset in the user's application data directory, which is

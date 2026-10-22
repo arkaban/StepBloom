@@ -323,36 +323,43 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::drawWaveformLayer(
 {
     const auto width = juce::jmax(1, static_cast<int>(plotArea.getWidth()));
     const auto centerY = plotArea.getCentreY();
+    const auto denominator = static_cast<float>(juce::jmax(1, width - 1));
     juce::Path waveform;
     juce::Path fill;
-    auto hasPoint = false;
 
     for (int x = 0; x < width; ++x)
     {
         const auto firstBin = x * waveformBinCount / width;
         const auto lastBin = juce::jmax(firstBin + 1, (x + 1) * waveformBinCount / width);
-        auto binMinimum = std::numeric_limits<float>::max();
-        auto binMaximum = std::numeric_limits<float>::lowest();
+        auto binMinimum = 0.0f;
+        auto binMaximum = 0.0f;
+        auto hasBin = false;
         for (int bin = firstBin; bin < juce::jmin(lastBin, waveformBinCount); ++bin)
         {
             const auto index = static_cast<size_t>(bin);
             if (counts[index] == 0)
                 continue;
-            binMinimum = juce::jmin(binMinimum, minimum[index]);
-            binMaximum = juce::jmax(binMaximum, maximum[index]);
+            if (!hasBin)
+            {
+                binMinimum = minimum[index];
+                binMaximum = maximum[index];
+                hasBin = true;
+            }
+            else
+            {
+                binMinimum = juce::jmin(binMinimum, minimum[index]);
+                binMaximum = juce::jmax(binMaximum, maximum[index]);
+            }
         }
 
-        if (binMinimum == std::numeric_limits<float>::max())
-            continue;
-
-        const auto xPosition = plotArea.getX() + static_cast<float>(x);
+        const auto xPosition = plotArea.getX()
+            + (static_cast<float>(x) / denominator) * plotArea.getWidth();
         const auto upperY = centerY - binMaximum * amplitudeScale;
         const auto lowerY = centerY - binMinimum * amplitudeScale;
-        if (!hasPoint)
+        if (x == 0)
         {
             waveform.startNewSubPath(xPosition, upperY);
             fill.startNewSubPath(xPosition, upperY);
-            hasPoint = true;
         }
         else
         {
@@ -363,26 +370,23 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::drawWaveformLayer(
         graphics.drawVerticalLine(static_cast<int>(xPosition), upperY, lowerY);
     }
 
-    if (!hasPoint)
-        return;
-
     for (int x = width - 1; x >= 0; --x)
     {
         const auto firstBin = x * waveformBinCount / width;
         const auto lastBin = juce::jmax(firstBin + 1, (x + 1) * waveformBinCount / width);
-        auto binMinimum = std::numeric_limits<float>::max();
+        auto binMinimum = 0.0f;
         auto hasBin = false;
         for (int bin = firstBin; bin < juce::jmin(lastBin, waveformBinCount); ++bin)
         {
             const auto index = static_cast<size_t>(bin);
             if (counts[index] == 0)
                 continue;
-            binMinimum = juce::jmin(binMinimum, minimum[index]);
+            binMinimum = hasBin ? juce::jmin(binMinimum, minimum[index]) : minimum[index];
             hasBin = true;
         }
-        if (hasBin)
-            fill.lineTo(plotArea.getX() + static_cast<float>(x),
-                        centerY - binMinimum * amplitudeScale);
+        const auto xPosition = plotArea.getX()
+            + (static_cast<float>(x) / denominator) * plotArea.getWidth();
+        fill.lineTo(xPosition, centerY - binMinimum * amplitudeScale);
     }
     fill.closeSubPath();
     graphics.setColour(colour.withAlpha(0.12f));
@@ -397,8 +401,8 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::timerCallback()
     if (latestSequence < nextWaveformSequence)
     {
         nextWaveformSequence = latestSequence;
-        hasDisplayCycle = false;
         clearWaveformBins();
+        hasDisplayCycle = false;
     }
 
     if (latestSequence - nextWaveformSequence
@@ -406,8 +410,8 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::timerCallback()
     {
         nextWaveformSequence = latestSequence
             - static_cast<uint64_t>(StepBloomAudioProcessor::waveformFifoCapacity);
-        hasDisplayCycle = false;
         clearWaveformBins();
+        hasDisplayCycle = false;
     }
 
     auto changed = false;
@@ -417,8 +421,8 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::timerCallback()
         if (!processor.readWaveformFrame(nextWaveformSequence, frame))
         {
             nextWaveformSequence = latestSequence;
-            hasDisplayCycle = false;
             clearWaveformBins();
+            hasDisplayCycle = false;
             break;
         }
 
@@ -735,13 +739,336 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::endGesture()
     repaint();
 }
 
+StepBloomAudioProcessorEditor::CrossoverPanelComponent::CrossoverPanelComponent(
+    StepBloomAudioProcessor& audioProcessor)
+    : processor(audioProcessor)
+{
+    constexpr std::array<const char*, 3> names{"LOW AMOUNT", "MID AMOUNT", "HIGH AMOUNT"};
+    constexpr std::array<const char*, 3> ids{"low", "mid", "high"};
+    for (size_t band = 0; band < names.size(); ++band)
+    {
+        bandLabels[band].setText(names[band], juce::dontSendNotification);
+        bandLabels[band].setColour(juce::Label::textColourId, accentHighlightColour);
+        bandLabels[band].setFont(juce::FontOptions(10.0f, juce::Font::bold));
+        addAndMakeVisible(bandLabels[band]);
+
+        auto& slider = duckAmountSliders[band];
+        slider.setSliderStyle(juce::Slider::LinearHorizontal);
+        slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 42, 18);
+        slider.setNumDecimalPlacesToDisplay(0);
+        slider.textFromValueFunction = [](double value)
+        {
+            return juce::String(juce::roundToInt(value * 100.0)) + "%";
+        };
+        slider.valueFromTextFunction = [](const juce::String& text)
+        {
+            return text.getFloatValue() * 0.01;
+        };
+        slider.setColour(juce::Slider::trackColourId, accentColour);
+        slider.setColour(juce::Slider::thumbColourId, accentHighlightColour);
+        slider.setColour(juce::Slider::textBoxTextColourId, accentHighlightColour);
+        slider.setColour(juce::Slider::textBoxBackgroundColourId, backgroundColour);
+        slider.setColour(juce::Slider::textBoxOutlineColourId, accentColour.withAlpha(0.7f));
+        addAndMakeVisible(slider);
+        duckAmountAttachments[band] =
+            std::make_unique<StepBloomAudioProcessor::Parameters::SliderAttachment>(
+                processor.parameters,
+                "duckAmount" + juce::String(ids[band]).substring(0, 1).toUpperCase()
+                    + juce::String(ids[band]).substring(1), slider);
+
+        auto& bypass = bypassButtons[band];
+        bypass.setButtonText("BYP");
+        bypass.setClickingTogglesState(true);
+        bypass.setColour(juce::TextButton::buttonColourId, panelColour);
+        bypass.setColour(juce::TextButton::buttonOnColourId, accentColour.withAlpha(0.45f));
+        bypass.setColour(juce::TextButton::textColourOffId, textColour);
+        bypass.setColour(juce::TextButton::textColourOnId, accentHighlightColour);
+        addAndMakeVisible(bypass);
+        bypassAttachments[band] =
+            std::make_unique<StepBloomAudioProcessor::Parameters::ButtonAttachment>(
+                processor.parameters, juce::String(ids[band]) + "Bypass", bypass);
+
+        auto& solo = soloButtons[band];
+        solo.setButtonText("SOLO");
+        solo.setClickingTogglesState(true);
+        solo.setColour(juce::TextButton::buttonColourId, panelColour);
+        solo.setColour(juce::TextButton::buttonOnColourId, accentColour.withAlpha(0.45f));
+        solo.setColour(juce::TextButton::textColourOffId, textColour);
+        solo.setColour(juce::TextButton::textColourOnId, accentHighlightColour);
+        addAndMakeVisible(solo);
+        soloAttachments[band] =
+            std::make_unique<StepBloomAudioProcessor::Parameters::ButtonAttachment>(
+                processor.parameters, juce::String(ids[band]) + "Solo", solo);
+    }
+
+    lastSpectrumSequence = processor.getLatestSpectrumSequence();
+    startTimerHz(30);
+}
+
+StepBloomAudioProcessorEditor::CrossoverPanelComponent::~CrossoverPanelComponent() = default;
+
+void StepBloomAudioProcessorEditor::CrossoverPanelComponent::paint(juce::Graphics& graphics)
+{
+    const auto bounds = getLocalBounds().toFloat();
+    graphics.setColour(juce::Colours::black.withAlpha(0.9f));
+    graphics.fillRoundedRectangle(bounds.translated(0.0f, 3.0f), 10.0f);
+    graphics.setGradientFill(juce::ColourGradient(
+        panelHighlightColour, bounds.getCentreX(), bounds.getY(),
+        panelColour, bounds.getCentreX(), bounds.getBottom(), false));
+    graphics.fillRoundedRectangle(bounds, 10.0f);
+    graphics.setColour(accentColour.withAlpha(0.55f));
+    graphics.drawRoundedRectangle(bounds.reduced(0.5f), 10.0f, 1.0f);
+
+    spectrumArea = bounds.reduced(14.0f, 12.0f);
+    spectrumArea.removeFromBottom(52.0f);
+    graphics.setColour(gridColour.withAlpha(0.55f));
+    for (int db = 0; db >= -60; db -= 20)
+    {
+        const auto y = spectrumArea.getBottom()
+            - static_cast<float>(-db) / 60.0f * spectrumArea.getHeight();
+        graphics.drawHorizontalLine(juce::roundToInt(y), spectrumArea.getX(),
+                                    spectrumArea.getRight());
+        graphics.setColour(textColour.withAlpha(0.55f));
+        graphics.setFont(juce::FontOptions(8.0f));
+        graphics.drawText(juce::String(db) + " dB",
+            juce::Rectangle<int>{juce::roundToInt(spectrumArea.getX() + 2.0f),
+                juce::roundToInt(y - 8.0f), 34, 12},
+            juce::Justification::centredLeft, false);
+        graphics.setColour(gridColour.withAlpha(0.55f));
+    }
+
+    const auto sampleRate = juce::jmax(1.0, processor.getSampleRate());
+    constexpr auto minimumFrequency = 20.0f;
+    const auto maximumFrequency = juce::jmin(20000.0f,
+        static_cast<float>(sampleRate * 0.5));
+    const auto logRange = std::log(maximumFrequency / minimumFrequency);
+    juce::Path spectrum;
+    spectrum.startNewSubPath(spectrumArea.getX(), spectrumArea.getBottom());
+    for (int x = 0; x < juce::jmax(1, static_cast<int>(spectrumArea.getWidth())); ++x)
+    {
+        const auto progress = static_cast<float>(x)
+            / juce::jmax(1.0f, spectrumArea.getWidth());
+        const auto frequency = minimumFrequency * std::exp(logRange * progress);
+        const auto bin = juce::jlimit(1, spectrumBinCount - 1,
+            juce::roundToInt(frequency * static_cast<float>(fftSize) / sampleRate));
+        const auto magnitude = magnitudes[static_cast<size_t>(bin)];
+        const auto decibels = juce::jlimit(-72.0f, 0.0f,
+            juce::Decibels::gainToDecibels(magnitude, -72.0f));
+        const auto y = spectrumArea.getBottom()
+            - (decibels + 72.0f) / 72.0f * spectrumArea.getHeight();
+        spectrum.lineTo(spectrumArea.getX() + static_cast<float>(x), y);
+    }
+    spectrum.lineTo(spectrumArea.getRight(), spectrumArea.getBottom());
+    spectrum.closeSubPath();
+    graphics.setColour(juce::Colour{0xff63b3d6}.withAlpha(0.22f));
+    graphics.fillPath(spectrum);
+    graphics.setColour(juce::Colour{0xff8dd8f2});
+    graphics.strokePath(spectrum, juce::PathStrokeType(1.5f));
+
+    const auto* lowParameter = processor.parameters.getRawParameterValue("crossoverLowMid");
+    const auto* highParameter = processor.parameters.getRawParameterValue("crossoverMidHigh");
+    const auto lowFrequency = lowParameter != nullptr ? lowParameter->load() : 200.0f;
+    const auto highFrequency = highParameter != nullptr ? highParameter->load() : 3000.0f;
+    const auto lowX = frequencyToX(lowFrequency);
+    const auto highX = frequencyToX(highFrequency);
+    graphics.setColour(juce::Colour{0xffffaa55});
+    graphics.drawVerticalLine(juce::roundToInt(lowX), spectrumArea.getY(), spectrumArea.getBottom());
+    graphics.fillEllipse(lowX - 5.0f, spectrumArea.getY() - 1.0f, 10.0f, 10.0f);
+    graphics.setColour(accentColour);
+    graphics.drawVerticalLine(juce::roundToInt(highX), spectrumArea.getY(), spectrumArea.getBottom());
+    graphics.fillEllipse(highX - 5.0f, spectrumArea.getY() - 1.0f, 10.0f, 10.0f);
+
+    graphics.setColour(textColour.withAlpha(0.75f));
+    graphics.setFont(juce::FontOptions(8.0f));
+    for (const auto frequency : {20, 100, 1000, 10000, 20000})
+    {
+        if (static_cast<float>(frequency) > maximumFrequency)
+            continue;
+        const auto x = frequencyToX(static_cast<float>(frequency));
+        graphics.drawText(frequency >= 1000 ? juce::String(frequency / 1000) + "k"
+                                            : juce::String(frequency) + "Hz",
+            juce::Rectangle<int>{juce::roundToInt(x - 18.0f),
+                juce::roundToInt(spectrumArea.getBottom() - 12.0f), 36, 11},
+            juce::Justification::centred, false);
+    }
+    graphics.setColour(accentHighlightColour);
+    graphics.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+    graphics.drawText("MULTIBAND CROSSOVER / INPUT SPECTRUM",
+        juce::Rectangle<int>{14, 2, getWidth() - 28, 12},
+        juce::Justification::centredLeft, false);
+}
+
+void StepBloomAudioProcessorEditor::CrossoverPanelComponent::paintOverChildren(
+    juce::Graphics& graphics)
+{
+    if (isEnabled())
+        return;
+
+    graphics.setColour(juce::Colours::black.withAlpha(0.65f));
+    graphics.fillAll();
+    graphics.setColour(textColour.withAlpha(0.82f));
+    graphics.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+    graphics.drawText("MULTIBAND DISABLED - SWITCH TO MULTI MODE TO ENABLE",
+                      getLocalBounds(), juce::Justification::centred, true);
+}
+
+void StepBloomAudioProcessorEditor::CrossoverPanelComponent::resized()
+{
+    auto controls = getLocalBounds().reduced(12);
+    controls.removeFromTop(controls.getHeight() - 48);
+    const auto width = controls.getWidth() / 3;
+    for (int band = 0; band < 3; ++band)
+    {
+        auto group = controls.removeFromLeft(width).reduced(3, 0);
+        bandLabels[static_cast<size_t>(band)].setBounds(group.removeFromTop(14));
+        auto buttons = group.removeFromRight(82);
+        bypassButtons[static_cast<size_t>(band)].setBounds(
+            buttons.removeFromLeft(38).reduced(1, 3));
+        soloButtons[static_cast<size_t>(band)].setBounds(
+            buttons.removeFromLeft(44).reduced(1, 3));
+        duckAmountSliders[static_cast<size_t>(band)].setBounds(group.reduced(0, 1));
+    }
+}
+
+void StepBloomAudioProcessorEditor::CrossoverPanelComponent::mouseDown(
+    const juce::MouseEvent& event)
+{
+    const auto* lowParameter = processor.parameters.getRawParameterValue("crossoverLowMid");
+    const auto* highParameter = processor.parameters.getRawParameterValue("crossoverMidHigh");
+    const auto lowX = frequencyToX(lowParameter != nullptr ? lowParameter->load() : 200.0f);
+    const auto highX = frequencyToX(highParameter != nullptr ? highParameter->load() : 3000.0f);
+    if (std::abs(event.position.x - lowX) <= 10.0f)
+        draggedCrossover = 1;
+    else if (std::abs(event.position.x - highX) <= 10.0f)
+        draggedCrossover = 2;
+
+    if (draggedCrossover != 0)
+    {
+        const auto id = draggedCrossover == 1 ? "crossoverLowMid" : "crossoverMidHigh";
+        if (auto* parameter = processor.parameters.getParameter(id))
+            parameter->beginChangeGesture();
+    }
+}
+
+void StepBloomAudioProcessorEditor::CrossoverPanelComponent::mouseDrag(
+    const juce::MouseEvent& event)
+{
+    if (draggedCrossover == 0)
+        return;
+    const auto* lowParameter = processor.parameters.getRawParameterValue("crossoverLowMid");
+    const auto* highParameter = processor.parameters.getRawParameterValue("crossoverMidHigh");
+    const auto lowFrequency = lowParameter != nullptr ? lowParameter->load() : 200.0f;
+    const auto highFrequency = highParameter != nullptr ? highParameter->load() : 3000.0f;
+    auto* parameter = processor.parameters.getParameter(
+        draggedCrossover == 1 ? "crossoverLowMid" : "crossoverMidHigh");
+    if (parameter == nullptr)
+        return;
+    auto frequency = xToFrequency(event.position.x);
+    if (draggedCrossover == 1)
+        frequency = juce::jlimit(20.0f, juce::jmin(2000.0f, highFrequency / 1.2f), frequency);
+    else
+        frequency = juce::jlimit(juce::jmax(1000.0f, lowFrequency * 1.2f),
+                                 20000.0f, frequency);
+    parameter->setValueNotifyingHost(parameter->convertTo0to1(frequency));
+    repaint();
+}
+
+void StepBloomAudioProcessorEditor::CrossoverPanelComponent::mouseUp(
+    const juce::MouseEvent&)
+{
+    if (draggedCrossover != 0)
+    {
+        const auto id = draggedCrossover == 1 ? "crossoverLowMid" : "crossoverMidHigh";
+        if (auto* parameter = processor.parameters.getParameter(id))
+            parameter->endChangeGesture();
+    }
+    draggedCrossover = 0;
+}
+
+void StepBloomAudioProcessorEditor::CrossoverPanelComponent::timerCallback()
+{
+    const auto latest = processor.getLatestSpectrumSequence();
+    if (latest < lastSpectrumSequence)
+        lastSpectrumSequence = latest;
+    const auto first = latest > static_cast<uint64_t>(fftSize)
+        ? latest - static_cast<uint64_t>(fftSize) : 0;
+    fftData.fill(0.0f);
+    const auto available = static_cast<int>(latest - first);
+    const auto offset = fftSize - available;
+    auto readSucceeded = true;
+    for (int index = 0; index < available; ++index)
+    {
+        float sample = 0.0f;
+        if (! processor.readSpectrumSample(first + static_cast<uint64_t>(index), sample))
+        {
+            readSucceeded = false;
+            break;
+        }
+        fftData[static_cast<size_t>(offset + index)] = sample;
+    }
+    if (readSucceeded && available > 0)
+    {
+        window.multiplyWithWindowingTable(fftData.data(), static_cast<size_t>(fftSize));
+        fft.performFrequencyOnlyForwardTransform(fftData.data());
+        const auto normalisation = 2.0f / static_cast<float>(fftSize);
+        for (int bin = 0; bin < spectrumBinCount; ++bin)
+            magnitudes[static_cast<size_t>(bin)] =
+                fftData[static_cast<size_t>(bin)] * normalisation;
+        lastSpectrumSequence = latest;
+        repaint();
+    }
+}
+
+float StepBloomAudioProcessorEditor::CrossoverPanelComponent::frequencyToX(
+    float frequency) const
+{
+    constexpr auto minimum = 20.0f;
+    const auto maximum = juce::jmax(minimum + 1.0f,
+        juce::jmin(20000.0f, static_cast<float>(processor.getSampleRate() * 0.5)));
+    const auto bounded = juce::jlimit(minimum, maximum, frequency);
+    const auto progress = std::log(bounded / minimum) / std::log(maximum / minimum);
+    const auto area = getLocalBounds().toFloat().reduced(14.0f, 12.0f)
+        .withTrimmedBottom(52.0f);
+    return area.getX() + progress * area.getWidth();
+}
+
+float StepBloomAudioProcessorEditor::CrossoverPanelComponent::xToFrequency(float x) const
+{
+    constexpr auto minimum = 20.0f;
+    const auto maximum = juce::jmax(minimum + 1.0f,
+        juce::jmin(20000.0f, static_cast<float>(processor.getSampleRate() * 0.5)));
+    const auto area = getLocalBounds().toFloat().reduced(14.0f, 12.0f)
+        .withTrimmedBottom(52.0f);
+    const auto progress = juce::jlimit(0.0f, 1.0f,
+        (x - area.getX()) / juce::jmax(1.0f, area.getWidth()));
+    return minimum * std::pow(maximum / minimum, progress);
+}
+
 StepBloomAudioProcessorEditor::StepBloomAudioProcessorEditor(
     StepBloomAudioProcessor& audioProcessor)
     : AudioProcessorEditor(&audioProcessor),
       processor(audioProcessor),
-      envelopeEditor(audioProcessor)
+      envelopeEditor(audioProcessor),
+      crossoverPanel(audioProcessor)
 {
-    setSize(800, 540);
+    setSize(800, 700);
+    processingModeValue = processor.parameters.getRawParameterValue("processingMode");
+
+    singlebandModeButton.setClickingTogglesState(true);
+    multibandModeButton.setClickingTogglesState(true);
+    singlebandModeButton.setRadioGroupId(17);
+    multibandModeButton.setRadioGroupId(17);
+    for (auto* button : {&singlebandModeButton, &multibandModeButton})
+    {
+        button->setColour(juce::TextButton::buttonColourId, panelColour);
+        button->setColour(juce::TextButton::buttonOnColourId, accentColour.withAlpha(0.55f));
+        button->setColour(juce::TextButton::textColourOffId, textColour);
+        button->setColour(juce::TextButton::textColourOnId, accentHighlightColour);
+        addAndMakeVisible(*button);
+    }
+    singlebandModeButton.onClick = [this] { setProcessingMode(false); };
+    multibandModeButton.onClick = [this] { setProcessingMode(true); };
+    startTimerHz(20);
 
     previousPresetButton.setColour(juce::TextButton::buttonColourId, panelColour);
     previousPresetButton.setColour(juce::TextButton::textColourOffId, accentHighlightColour);
@@ -796,6 +1123,7 @@ StepBloomAudioProcessorEditor::StepBloomAudioProcessorEditor(
     settingsButton.onClick = [this] { showSettingsMenu(); };
     addAndMakeVisible(settingsButton);
     refreshPresetList();
+    addAndMakeVisible(crossoverPanel);
 
     depthLabel.setText("MIX", juce::dontSendNotification);
     depthLabel.setColour(juce::Label::textColourId, accentHighlightColour);
@@ -902,6 +1230,7 @@ StepBloomAudioProcessorEditor::StepBloomAudioProcessorEditor(
         processor.parameters, "cycle", cycleBox);
 
     addAndMakeVisible(envelopeEditor);
+    setProcessingMode(processingModeValue != nullptr && processingModeValue->load() >= 0.5f);
 }
 
 StepBloomAudioProcessorEditor::~StepBloomAudioProcessorEditor()
@@ -912,6 +1241,7 @@ StepBloomAudioProcessorEditor::~StepBloomAudioProcessorEditor()
     triggerModeBox.setLookAndFeel(nullptr);
     cycleBox.setLookAndFeel(nullptr);
     presetBox.setLookAndFeel(nullptr);
+    stopTimer();
 }
 
 void StepBloomAudioProcessorEditor::paint(juce::Graphics& graphics)
@@ -940,6 +1270,8 @@ void StepBloomAudioProcessorEditor::resized()
     previousPresetButton.setBounds(292, 15, 30, 30);
     presetBox.setBounds(328, 15, 250, 30);
     nextPresetButton.setBounds(584, 15, 30, 30);
+    singlebandModeButton.setBounds(625, 15, 58, 30);
+    multibandModeButton.setBounds(686, 15, 54, 30);
     settingsButton.setBounds(getWidth() - 58, 12, 34, 34);
 
     auto controls = bounds.removeFromTop(112);
@@ -967,8 +1299,29 @@ void StepBloomAudioProcessorEditor::resized()
     holdOffLabel.setBounds(holdOffArea.removeFromTop(18));
     holdOffSlider.setBounds(holdOffArea.reduced(2, 0));
 
-    bounds.removeFromTop(8);
+    bounds.removeFromTop(4);
+    auto crossoverBounds = bounds.removeFromBottom(190);
+    crossoverPanel.setBounds(crossoverBounds);
+    bounds.removeFromBottom(6);
     envelopeEditor.setBounds(bounds);
+}
+
+void StepBloomAudioProcessorEditor::timerCallback()
+{
+    const auto isMultiband = processingModeValue != nullptr
+        && processingModeValue->load(std::memory_order_relaxed) >= 0.5f;
+    singlebandModeButton.setToggleState(! isMultiband, juce::dontSendNotification);
+    multibandModeButton.setToggleState(isMultiband, juce::dontSendNotification);
+    crossoverPanel.setEnabled(isMultiband);
+}
+
+void StepBloomAudioProcessorEditor::setProcessingMode(bool multiband)
+{
+    if (auto* parameter = processor.parameters.getParameter("processingMode"))
+        parameter->setValueNotifyingHost(parameter->convertTo0to1(multiband ? 1.0f : 0.0f));
+    singlebandModeButton.setToggleState(! multiband, juce::dontSendNotification);
+    multibandModeButton.setToggleState(multiband, juce::dontSendNotification);
+    crossoverPanel.setEnabled(multiband);
 }
 
 void StepBloomAudioProcessorEditor::refreshPresetList()

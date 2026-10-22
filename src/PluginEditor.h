@@ -2,6 +2,8 @@
 
 #include "PluginProcessor.h"
 
+#include <array>
+
 class StepBloomLookAndFeel final : public juce::LookAndFeel_V4
 {
 public:
@@ -11,7 +13,8 @@ public:
                       juce::ComboBox&) override;
 };
 
-class StepBloomAudioProcessorEditor final : public juce::AudioProcessorEditor
+class StepBloomAudioProcessorEditor final : public juce::AudioProcessorEditor,
+                                            private juce::Timer
 {
 public:
     explicit StepBloomAudioProcessorEditor(StepBloomAudioProcessor&);
@@ -26,6 +29,49 @@ private:
     public:
         SettingsButton();
         void paintButton(juce::Graphics&, bool, bool) override;
+    };
+
+    class CrossoverPanelComponent final : public juce::Component, private juce::Timer
+    {
+    public:
+        explicit CrossoverPanelComponent(StepBloomAudioProcessor&);
+        ~CrossoverPanelComponent() override;
+        void paint(juce::Graphics&) override;
+        void paintOverChildren(juce::Graphics&) override;
+        void resized() override;
+        void mouseDown(const juce::MouseEvent&) override;
+        void mouseDrag(const juce::MouseEvent&) override;
+        void mouseUp(const juce::MouseEvent&) override;
+
+    private:
+        static constexpr int fftOrder = 11;
+        static constexpr int fftSize = 1 << fftOrder;
+        static constexpr int spectrumBinCount = fftSize / 2;
+
+        void timerCallback() override;
+        float frequencyToX(float frequency) const;
+        float xToFrequency(float x) const;
+
+        StepBloomAudioProcessor& processor;
+        juce::Rectangle<float> spectrumArea;
+        juce::dsp::FFT fft{fftOrder};
+        juce::dsp::WindowingFunction<float> window{
+            fftSize, juce::dsp::WindowingFunction<float>::hann, false};
+        std::array<float, fftSize * 2> fftData{};
+        std::array<float, spectrumBinCount> magnitudes{};
+        uint64_t lastSpectrumSequence = 0;
+        std::array<juce::Slider, 3> duckAmountSliders;
+        std::array<juce::Label, 3> bandLabels;
+        std::array<juce::TextButton, 3> bypassButtons;
+        std::array<juce::TextButton, 3> soloButtons;
+        std::array<std::unique_ptr<StepBloomAudioProcessor::Parameters::SliderAttachment>, 3>
+            duckAmountAttachments;
+        std::array<std::unique_ptr<StepBloomAudioProcessor::Parameters::ButtonAttachment>, 3>
+            bypassAttachments;
+        std::array<std::unique_ptr<StepBloomAudioProcessor::Parameters::ButtonAttachment>, 3>
+            soloAttachments;
+        int draggedCrossover = 0;
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CrossoverPanelComponent)
     };
 
     class ThreeNodeEnvelopeEditor final : public juce::Component, private juce::Timer
@@ -89,8 +135,11 @@ private:
     StepBloomAudioProcessor& processor;
     StepBloomLookAndFeel lookAndFeel;
     ThreeNodeEnvelopeEditor envelopeEditor;
+    CrossoverPanelComponent crossoverPanel;
     juce::TextButton previousPresetButton{"<"};
     juce::TextButton nextPresetButton{">"};
+    juce::TextButton singlebandModeButton{"SINGLE"};
+    juce::TextButton multibandModeButton{"MULTI"};
     juce::ComboBox presetBox;
     SettingsButton settingsButton;
     juce::Slider depthSlider;
@@ -109,10 +158,13 @@ private:
     std::unique_ptr<StepBloomAudioProcessor::Parameters::ComboBoxAttachment> triggerModeAttachment;
     std::unique_ptr<StepBloomAudioProcessor::Parameters::ComboBoxAttachment> cycleAttachment;
     std::unique_ptr<juce::FileChooser> presetFileChooser;
+    std::atomic<float>* processingModeValue = nullptr;
 
+    void timerCallback() override;
     void refreshPresetList();
     void showPresetResult(const juce::Result&);
     void showSettingsMenu();
+    void setProcessingMode(bool multiband);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StepBloomAudioProcessorEditor)
 };

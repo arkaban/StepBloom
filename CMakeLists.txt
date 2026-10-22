@@ -47,6 +47,7 @@ target_compile_definitions(StepBloom PUBLIC
 
 target_link_libraries(StepBloom PRIVATE
     juce::juce_audio_processors
+    juce::juce_dsp
     juce::juce_gui_basics
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags

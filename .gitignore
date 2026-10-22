@@ -1,0 +1,9 @@
+# Ignore build output
+build/
+CMakeFiles/
+
+# Ignore log files
+*.log
+
+# Ignore environment variables
+.env

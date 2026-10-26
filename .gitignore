@@ -1,6 +1,14 @@
-# Ignore build output
+# Ignore build output & installer outputs
 build/
+Output/
 CMakeFiles/
+
+# Visual Studio temporary files & user settings
+.vs/
+*.user
+*.suo
+*.db
+*.opendb
 
 # Ignore log files
 *.log

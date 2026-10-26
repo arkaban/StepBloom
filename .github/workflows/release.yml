@@ -1,0 +1,134 @@
+name: Build & Release StepBloom Installers
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # ==========================================
+  # WINDOWS BUILD & INNO SETUP INSTALLER
+  # ==========================================
+  build-windows:
+    name: Build Windows Installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSVC & CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.25.x'
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build VST3
+        run: |
+          cmake --build build --config Release --parallel
+
+      - name: Build Inno Setup Installer
+        run: |
+          iscc installer.iss
+
+      - name: Upload Windows Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StepBloom-Windows-Installer
+          path: Output/StepBloom_Installer_Win64.exe
+
+  # ==========================================
+  # LINUX BUILD & CPACK (.DEB, .RPM, .TAR.GZ)
+  # ==========================================
+  build-linux:
+    name: Build Linux Packages
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            libasound2-dev \
+            libjack-jackd2-dev \
+            ladspa-sdk \
+            libcurl4-openssl-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libx11-dev \
+            libxcomposite-dev \
+            libxcursor-dev \
+            libxext-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            lv2-dev \
+            rpm
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build VST3 and LV2
+        run: |
+          cmake --build build --config Release -j$(nproc)
+
+      - name: Generate Linux Packages (CPack)
+        cd: build
+        run: |
+          cpack -G "DEB;RPM;TGZ"
+
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: StepBloom-Linux-Packages
+          path: |
+            build/*.deb
+            build/*.rpm
+            build/*.tar.gz
+
+  # ==========================================
+  # CREATE GITHUB RELEASE & ATTACH BINARIES
+  # ==========================================
+  create-release:
+    name: Create GitHub Release
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Windows Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: StepBloom-Windows-Installer
+          path: ./release-assets
+
+      - name: Download Linux Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: StepBloom-Linux-Packages
+          path: ./release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./release-assets/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,80 +1,84 @@
 # StepBloom
 
-StepBloom is an original, lightweight VST3 volume shaper. Shape the envelope
-with three fixed nodes: Start controls attack time and start gain, Recovery
-controls duck width and curve tension, and End controls the tail fade offset
-and end gain. Double-click empty canvas space to add up to two extra 2D nodes
-to a profile; double-click an extra node to remove it. Drag extra nodes freely
-or use Ctrl/Cmd-drag to snap them to the adaptive phase and gain grid. The
-attack and tail use smooth S-curves, with a tension-shaped power curve for
-recovery. Choose a trigger mode: Sync
-loops to host tempo and position, MIDI Trigger plays once per MIDI note-on,
-and Audio Trigger plays once per sidechain threshold crossing. Triggered modes
-hold at unity gain until the next trigger. Choose a half-, quarter-, eighth-,
-or sixteenth-note envelope duration. The editor overlays the sidechain
-waveform and processed main output, synchronized to the active envelope cycle.
-The audio trigger threshold and retrigger hold-off are adjustable in the
-interface. The gain envelope is smoothed over 3 ms, and Sync mode remains at
-unity while the host is stopped to reduce transport-start clicks. Recovery
-curve tension ranges from 0.2 to 1.5; 1.0 maps to a linear power of 1, while
-the maximum setting maps to a power of 2.5.
+> **Tempo-Synced Multiband Volume Shaper**
 
-Processing can be switched between Singleband and Multiband. Singleband routes
-the Master envelope directly to the full-range signal, bypassing the crossover
-DSP, hides the crossover panel, and collapses the editor; mode changes crossfade
-over 3 ms. Multiband restores the crossover panel and provides independent Low,
-Mid, and High envelope profiles, selected from tabs above the envelope canvas;
-Singleband locks the editor to Master, while Multiband presents the three band
-tabs. The top control strip includes 14 shape-profile thumbnails that apply to
-the active envelope profile. Copy and Paste controls transfer the complete
-fixed- and extra-node curve between band profiles. The Settings menu offers
-75%, 100%, 150%, and 200% vector UI scaling, with an option to persist the
-current zoom as the default. Scale is also saved in plugin state, and the editor
-combines the selected zoom with host-provided DPI scaling. The 100% logical
-editor size is 840 × 480 in Singleband and 840 × 680 in Multiband.
-Multiband uses a stereo, fourth-order
-Linkwitz-Riley crossover in a separate lower panel. Its input spectrum is
-displayed with a 2048-point Hann-windowed FFT, and the Low-Mid and Mid-High
-crossover handles are draggable there. Each band has an independent duck
-amount, bypass, and solo control; the Mix control scales the combined band
-ducking depth. Band amounts display and operate over a 0-100% range. The audio
-sidechain input is enabled by default; select Audio Trigger and route a signal
-to that input to retrigger the envelope. The crossover panel is greyed out while Singleband is selected.
-The top-bar SINGLE/MULTI buttons select the processing mode, and mode changes
-crossfade over 3 ms.
+StepBloom is a modern audio plugin designed for precise volume shaping, sidechain ducking, and frequency-conscious dynamics. Featuring both single-band simplicity and precise 3-band crossover processing, StepBloom gives you complete control over your track's dynamic shape and rhythmic groove.
 
-The header preset selector navigates XML presets stored in the active preset
-directory, which defaults to `Documents/StepBloom/Presets`. The Settings menu
-can save named presets or a `default.preset` in that directory, choose and
-persist a different preset directory, or open the active directory in the
-operating system's file manager. The saved default preset is loaded when the
-plugin is initialized.
+---
 
-## Build on Windows
+## 📸 Screenshots
 
-Requirements:
+| Single-Band Mode | Multiband Mode |
+| :---: | :---: |
+|<img width="1063" height="648" alt="Screenshot 2026-10-26 191551" src="https://github.com/user-attachments/assets/012dc3d2-9cce-4c5a-8840-0e11e96e92f5" /> | <img width="1033" height="862" alt="Screenshot 2026-10-26 191604" src="https://github.com/user-attachments/assets/c5533dbf-8fb1-45d4-8b8d-934ed95276cd" /> |
 
-- CMake 3.22 or newer
-- Visual Studio 2022 with the C++ desktop workload
-- Git and an internet connection for the first configure (JUCE 8.0.8 is fetched
-  and pinned by CMake)
+---
 
-From a Visual Studio Developer PowerShell in this directory:
 
-```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release --target StepBloom_VST3
+## ✨ Key Features
+
+* **Single & Multiband Processing Modes:** Switch seamlessly between single-band global volume shaping and full 3-band multiband control (`LOW`, `MID`, `HIGH`).
+* **3-Band Crossover Network:** Visual spectrum analyzer with adjustable crossover frequencies from 20 Hz to 20 kHz.
+* **Per-Band Control:** Independent level sliders, **Bypass (`BYP`)**, and **Solo** toggles for `LOW`, `MID`, and `HIGH` frequency bands.
+* **Flexible Envelope Engine:** Interactive node-based curve editing with controls for:
+  * **Start:** Attack / Gain
+  * **Knee:** Width / Tension
+  * **End:** Tail / Gain
+* **14 Quick-Select Curve Presets:** Instant access to pre-defined shapes for instant sidechain ducking, ramps, and custom gating profiles.
+* **Tempo Sync & Timing:** Flexible trigger modes (including `Sync`) and cycle duration options ranging from `1/4` notes to custom rates.
+* **Workflow Tools:** Dedicated **Copy** and **Paste** buttons for copying envelopes between bands, along with preset selection and global `MIX` control.
+
+---
+
+## 🎛️ Interface Overview
+
+
+### 1. Global Bar
+* **Presets & Navigation:** Browse or cycle through custom presets using the header dropdown and navigation arrows.
+* **Mode Toggle:** Switch between `SINGLE` and `MULTI` modes.
+* **Global Mix:** 0% to 100% dry/wet balance control.
+* **Trigger & Cycle:** Set sync modes (`Sync`) and timing rates (`1/4`, etc.).
+* **Preset Grid:** 14 quick-select curve shape buttons for immediate sidechain profiles.
+
+### 2. Envelope Editor (`SINGLE` / `MULTI`)
+* **Visual Display:** Real-time visual feedback for the envelope curve overlaid on a dB grid (-inf to 0 dB).
+* **Curve Handles:** Drag nodes to shape attack curves, tension/knee width, and tail release parameters.
+* **Copy / Paste:** Duplicate shape settings across different bands instantly.
+
+### 3. Multiband Crossover Engine (`MULTI` Mode Only)
+* **Frequency Splitter:** Interactive handles to set low/mid and mid/high crossover points across the 20 Hz – 20 kHz spectrum.
+* **Band Controls:**
+  * **LOW:** Amount slider, Bypass, Solo
+  * **MID:** Amount slider, Bypass, Solo
+  * **HIGH:** Amount slider, Bypass, Solo
+
+---
+
+## 🛠️ Building from Source
+
+### Prerequisites
+* **CMake** (3.22 or higher)
+* **C++20** compatible compiler (MSVC on Windows / Clang on macOS / GCC on Linux)
+* **JUCE Framework** (fetched automatically via CMake `FetchContent`)
+
+### Build Steps
+
+```bash
+# Clone the repository
+git clone https://github.com/arkaban/StepBloom.git
+cd StepBloom
+
+# Configure build files
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+# Build the project
+cmake --build build --config Release --parallel
 ```
 
-The VST3 bundle is produced under `build/StepBloom_artefacts/Release/VST3`.
-Copy the bundle into your DAW's VST3 scan folder if it is not discovered
-automatically.
+Built artifacts (`.vst3`, `.component`, or executable) will be generated inside the `build/` folder.
 
-Each of the four profiles has independent fixed-node and optional extra-node
-parameters. Waveform frames
-are written to a fixed lock-free atomic
-FIFO and accumulated into min/max phase bins by the UI timer, preserving
-transients when rendering at the editor's pixel width. The audio thread does
-not allocate memory or perform locking in the processing loop. The interface
-uses a black-and-yellow theme. JUCE is included as a build dependency; consult
-its license terms for your distribution plans.
+---
+
+## 📜 License
+
+Distributed under the MIT License. See `LICENSE` for more information.

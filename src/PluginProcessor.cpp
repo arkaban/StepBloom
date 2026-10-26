@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cmath>
+#include <utility>
 
 namespace
 {
@@ -44,6 +45,111 @@ float StepBloomAudioProcessor::evaluateEnvelope(
         (phase - tailStart) / fadeLength);
     const auto smoothProgress = progress * progress * (3.0f - 2.0f * progress);
     return 1.0f + (endGain - 1.0f) * smoothProgress;
+}
+
+float StepBloomAudioProcessor::evaluateProfileEnvelope(
+    float phase, float attackPhase, float duckWidth,
+    float startGain, float curveTension,
+    float endFadeOffset, float endGain,
+    const std::array<ExtraEnvelopeNode, 2>& extras) noexcept
+{
+    if (!extras[0].active && !extras[1].active)
+        return evaluateEnvelope(phase, attackPhase, duckWidth, startGain,
+                                curveTension, endFadeOffset, endGain);
+
+    struct Point
+    {
+        float phase;
+        float gain;
+    };
+    std::array<Point, 7> points{};
+    size_t pointCount = 0;
+    const auto addPoint = [&points, &pointCount](float pointPhase, float gain)
+    {
+        points[pointCount++] = {juce::jlimit(0.0f, 1.0f, pointPhase),
+                                juce::jlimit(0.0f, 1.0f, gain)};
+    };
+    addPoint(0.0f, evaluateEnvelope(0.0f, attackPhase, duckWidth, startGain,
+                                    curveTension, endFadeOffset, endGain));
+    addPoint(attackPhase, startGain);
+    addPoint(duckWidth, 1.0f);
+    for (const auto& extra : extras)
+        if (extra.active)
+            addPoint(extra.phase, extra.gain);
+    addPoint(endFadeOffset, endGain);
+    addPoint(1.0f, endGain);
+
+    for (size_t i = 1; i < pointCount; ++i)
+    {
+        auto point = points[i];
+        auto position = i;
+        while (position > 0 && points[position - 1].phase > point.phase)
+        {
+            points[position] = points[position - 1];
+            --position;
+        }
+        points[position] = point;
+    }
+
+    auto uniquePointCount = size_t{0};
+    for (size_t i = 0; i < pointCount; ++i)
+    {
+        if (uniquePointCount > 0
+            && points[i].phase - points[uniquePointCount - 1].phase <= 1.0e-6f)
+            points[uniquePointCount - 1] = points[i];
+        else
+            points[uniquePointCount++] = points[i];
+    }
+    pointCount = uniquePointCount;
+
+    size_t left = 0;
+    while (left + 1 < pointCount && phase > points[left + 1].phase)
+        ++left;
+    if (left + 1 >= pointCount)
+        return points[pointCount - 1].gain;
+
+    const auto& first = points[left];
+    const auto& second = points[left + 1];
+    const auto segmentLength = second.phase - first.phase;
+    if (segmentLength <= 1.0e-6f)
+        return second.gain;
+
+    const auto progress = juce::jlimit(0.0f, 1.0f,
+        (phase - first.phase) / segmentLength);
+    auto shapedProgress = progress * progress * (3.0f - 2.0f * progress);
+    if (first.phase >= attackPhase && second.phase <= duckWidth)
+    {
+        const auto tension = juce::jlimit(0.2f, 1.5f, curveTension);
+        const auto shape = tension <= 1.0f ? tension : 1.0f + (tension - 1.0f) * 3.0f;
+        shapedProgress = std::pow(progress, shape);
+    }
+    return first.gain + (second.gain - first.gain) * shapedProgress;
+}
+
+void StepBloomAudioProcessor::migrateLegacyEnvelopeState(juce::ValueTree state)
+{
+    if (state.getChildWithProperty("id", "Master_Node1_X").isValid())
+        return;
+
+    constexpr std::array<std::pair<const char*, const char*>, 6> legacyMappings{{
+        {"attackTime", "Master_Node1_X"},
+        {"minGain", "Master_Node1_Y"},
+        {"duckWidth", "Master_Node2_X"},
+        {"releaseTension", "Master_Node2_Y"},
+        {"endFadeOffset", "Master_Node3_X"},
+        {"endGain", "Master_Node3_Y"}
+    }};
+    for (const auto& mapping : legacyMappings)
+    {
+        const auto oldParameter = state.getChildWithProperty("id", mapping.first);
+        if (!oldParameter.isValid())
+            continue;
+
+        juce::ValueTree migratedParameter{oldParameter.getType()};
+        migratedParameter.setProperty("id", mapping.second, nullptr);
+        migratedParameter.setProperty("value", oldParameter.getProperty("value"), nullptr);
+        state.appendChild(migratedParameter, nullptr);
+    }
 }
 
 float StepBloomAudioProcessor::getCycleDurationMilliseconds() const noexcept
@@ -98,30 +204,45 @@ StepBloomAudioProcessor::Parameters::ParameterLayout StepBloomAudioProcessor::cr
         juce::ParameterID{"processingMode", 1}, "Processing Mode",
         juce::StringArray{"Singleband", "Multiband"}, 0));
     layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID{"duckWidth", 1}, "Duck Width",
-        juce::NormalisableRange<float>{0.1f, 0.95f, 0.001f}, 0.6f));
-    layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID{"attackTime", 1}, "Attack Time",
-        juce::NormalisableRange<float>{0.0f, 15.0f, 0.01f}, 3.0f,
-        juce::AudioParameterFloatAttributes{}.withLabel("ms")));
-    layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID{"minGain", 1}, "Start Gain",
-        juce::NormalisableRange<float>{0.0f, 1.0f, 0.001f}, 0.2f,
-        juce::AudioParameterFloatAttributes{}.withLabel("%")
-            .withStringFromValueFunction([](float value, int maximumLength)
-            {
-                const auto text = juce::String(juce::roundToInt(value * 100.0f)) + "%";
-                return maximumLength > 0 ? text.substring(0, maximumLength) : text;
-            })));
-    layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID{"releaseTension", 1}, "Curve Tension",
-        juce::NormalisableRange<float>{0.2f, 1.5f, 0.001f}, 1.0f));
-    layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID{"endFadeOffset", 1}, "End Fade Offset",
-        juce::NormalisableRange<float>{0.8f, 1.0f, 0.001f}, 0.95f));
-    layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID{"endGain", 1}, "End Gain",
-        juce::NormalisableRange<float>{0.0f, 1.0f, 0.001f}, 1.0f));
+        juce::ParameterID{"userScaleFactor", 1}, "UI Scale",
+        juce::NormalisableRange<float>{0.75f, 2.0f, 0.25f}, 1.0f,
+        juce::AudioParameterFloatAttributes{}.withAutomatable(false)));
+    constexpr std::array<const char*, 4> profileNames{"Master", "Low", "Mid", "High"};
+    for (const auto* profileName : profileNames)
+    {
+        const auto prefix = juce::String(profileName) + "_";
+        const auto addFloat = [&layout, &prefix](const juce::String& suffix,
+                                                  const juce::String& name,
+                                                  juce::NormalisableRange<float> range,
+                                                  float defaultValue)
+        {
+            layout.add(std::make_unique<juce::AudioParameterFloat>(
+                juce::ParameterID{prefix + suffix, 1}, prefix + name, range, defaultValue));
+        };
+        addFloat("Node1_X", "Attack Time",
+                 juce::NormalisableRange<float>{0.0f, 15.0f, 0.01f}, 3.0f);
+        addFloat("Node1_Y", "Duck Floor",
+                 juce::NormalisableRange<float>{0.0f, 1.0f, 0.001f}, 0.2f);
+        addFloat("Node2_X", "Duck Width",
+                 juce::NormalisableRange<float>{0.1f, 0.95f, 0.001f}, 0.6f);
+        addFloat("Node2_Y", "Curve Tension",
+                 juce::NormalisableRange<float>{0.2f, 1.5f, 0.001f}, 1.0f);
+        addFloat("Node3_X", "Tail Offset",
+                 juce::NormalisableRange<float>{0.8f, 1.0f, 0.001f}, 0.95f);
+        addFloat("Node3_Y", "End Gain",
+                 juce::NormalisableRange<float>{0.0f, 1.0f, 0.001f}, 1.0f);
+        for (int extra = 0; extra < 2; ++extra)
+        {
+            const auto extraName = "Extra" + juce::String(extra + 1);
+            layout.add(std::make_unique<juce::AudioParameterBool>(
+                juce::ParameterID{prefix + extraName + "_Active", 1},
+                prefix + extraName + " Active", false));
+            addFloat(extraName + "_X", extraName + " Phase",
+                     juce::NormalisableRange<float>{0.05f, 0.95f, 0.001f}, 0.5f);
+            addFloat(extraName + "_Y", extraName + " Gain",
+                     juce::NormalisableRange<float>{0.0f, 1.0f, 0.001f}, 0.5f);
+        }
+    }
     layout.add(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID{"crossoverLowMid", 1}, "Low-Mid Crossover",
         juce::NormalisableRange<float>{20.0f, 2000.0f, 0.0f, 0.35f}, 200.0f,
@@ -169,6 +290,12 @@ StepBloomAudioProcessor::StepBloomAudioProcessor()
         if (result.failed())
             juce::Logger::writeToLog("StepBloom: " + result.getErrorMessage());
     }
+
+    if (auto* scaleParameter = parameters.getParameter("userScaleFactor"))
+    {
+        const auto defaultZoom = presetManager.getUserDefaultZoom();
+        scaleParameter->setValueNotifyingHost(scaleParameter->convertTo0to1(defaultZoom));
+    }
 }
 
 void StepBloomAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
@@ -192,12 +319,38 @@ void StepBloomAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     holdOffParameter = parameters.getRawParameterValue("triggerHoldOff");
     triggerModeParameter = parameters.getRawParameterValue("triggerMode");
     processingModeParameter = parameters.getRawParameterValue("processingMode");
-    duckWidthParameter = parameters.getRawParameterValue("duckWidth");
-    attackTimeParameter = parameters.getRawParameterValue("attackTime");
-    minGainParameter = parameters.getRawParameterValue("minGain");
-    releaseTensionParameter = parameters.getRawParameterValue("releaseTension");
-    endFadeOffsetParameter = parameters.getRawParameterValue("endFadeOffset");
-    endGainParameter = parameters.getRawParameterValue("endGain");
+    constexpr std::array<const char*, 4> profileNames{"Master", "Low", "Mid", "High"};
+    constexpr std::array<const char*, 6> fixedNodeNames{
+        "Node1_X", "Node1_Y", "Node2_X", "Node2_Y", "Node3_X", "Node3_Y"};
+    for (size_t profile = 0; profile < profileNames.size(); ++profile)
+    {
+        const auto prefix = juce::String(profileNames[profile]) + "_";
+        for (size_t node = 0; node < fixedNodeNames.size(); ++node)
+        {
+            envelopeProfiles[profile].fixedNodes[node] = parameters.getRawParameterValue(
+                prefix + fixedNodeNames[node]);
+            auto& smoother = smoothedEnvelopeProfiles[profile][node];
+            smoother.reset(sampleRate, 0.01);
+            const auto defaultValue = node == 0 ? 3.0f
+                : node == 1 ? 0.2f
+                : node == 2 ? 0.6f
+                : node == 3 ? 1.0f
+                : node == 4 ? 0.95f : 1.0f;
+            const auto initialValue = envelopeProfiles[profile].fixedNodes[node] != nullptr
+                ? envelopeProfiles[profile].fixedNodes[node]->load() : defaultValue;
+            smoother.setCurrentAndTargetValue(initialValue);
+        }
+        for (size_t extra = 0; extra < 2; ++extra)
+        {
+            const auto extraPrefix = prefix + "Extra" + juce::String(extra + 1);
+            envelopeProfiles[profile].extraActive[extra] =
+                parameters.getRawParameterValue(extraPrefix + "_Active");
+            envelopeProfiles[profile].extraPhase[extra] =
+                parameters.getRawParameterValue(extraPrefix + "_X");
+            envelopeProfiles[profile].extraGain[extra] =
+                parameters.getRawParameterValue(extraPrefix + "_Y");
+        }
+    }
     crossoverLowMidParameter = parameters.getRawParameterValue("crossoverLowMid");
     crossoverMidHighParameter = parameters.getRawParameterValue("crossoverMidHigh");
     constexpr std::array<const char*, 3> bandIds{"low", "mid", "high"};
@@ -213,31 +366,6 @@ void StepBloomAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     }
     smoothedModeBlend.reset(sampleRate, 0.003);
     smoothedModeBlend.setCurrentAndTargetValue(0.0f);
-    const auto initialDuckWidth = duckWidthParameter != nullptr
-        ? duckWidthParameter->load()
-        : 0.6f;
-    const auto initialAttackTime = attackTimeParameter != nullptr ? attackTimeParameter->load() : 3.0f;
-    const auto initialMinGain = minGainParameter != nullptr ? minGainParameter->load() : 0.2f;
-    const auto initialReleaseTension = releaseTensionParameter != nullptr
-        ? releaseTensionParameter->load()
-        : 1.0f;
-    const auto initialEndFadeOffset = endFadeOffsetParameter != nullptr
-        ? endFadeOffsetParameter->load()
-        : 0.95f;
-    const auto initialEndGain = endGainParameter != nullptr ? endGainParameter->load() : 1.0f;
-    smoothedDuckWidth.reset(sampleRate, 0.01);
-    smoothedDuckWidth.setCurrentAndTargetValue(initialDuckWidth);
-    smoothedAttackTime.reset(sampleRate, 0.01);
-    smoothedAttackTime.setCurrentAndTargetValue(initialAttackTime);
-    smoothedMinGain.reset(sampleRate, 0.01);
-    smoothedMinGain.setCurrentAndTargetValue(initialMinGain);
-    smoothedReleaseTension.reset(sampleRate, 0.01);
-    smoothedReleaseTension.setCurrentAndTargetValue(initialReleaseTension);
-    smoothedEndFadeOffset.reset(sampleRate, 0.01);
-    smoothedEndFadeOffset.setCurrentAndTargetValue(initialEndFadeOffset);
-    smoothedEndGain.reset(sampleRate, 0.01);
-    smoothedEndGain.setCurrentAndTargetValue(initialEndGain);
-
     const juce::dsp::ProcessSpec filterSpec{
         sampleRate, static_cast<uint32_t>(juce::jmax(1, samplesPerBlock)), 2};
     for (auto& filter : lowMidFilters)
@@ -360,24 +488,29 @@ void StepBloomAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         anyBandSoloed = anyBandSoloed || bandSoloed[band];
     }
 
-    smoothedDuckWidth.setTargetValue(duckWidthParameter != nullptr
-        ? duckWidthParameter->load()
-        : 0.6f);
-    smoothedAttackTime.setTargetValue(attackTimeParameter != nullptr
-        ? attackTimeParameter->load()
-        : 3.0f);
-    smoothedMinGain.setTargetValue(minGainParameter != nullptr
-        ? minGainParameter->load()
-        : 0.2f);
-    smoothedReleaseTension.setTargetValue(releaseTensionParameter != nullptr
-        ? releaseTensionParameter->load()
-        : 0.0f);
-    smoothedEndFadeOffset.setTargetValue(endFadeOffsetParameter != nullptr
-        ? endFadeOffsetParameter->load()
-        : 0.95f);
-    smoothedEndGain.setTargetValue(endGainParameter != nullptr
-        ? endGainParameter->load()
-        : 1.0f);
+    std::array<std::array<ExtraEnvelopeNode, 2>, 4> extraNodes{};
+    for (size_t profile = 0; profile < envelopeProfiles.size(); ++profile)
+    {
+        for (size_t node = 0; node < smoothedEnvelopeProfiles[profile].size(); ++node)
+        {
+            const auto* parameter = envelopeProfiles[profile].fixedNodes[node];
+            if (parameter != nullptr)
+                smoothedEnvelopeProfiles[profile][node].setTargetValue(parameter->load());
+        }
+        for (size_t extra = 0; extra < extraNodes[profile].size(); ++extra)
+        {
+            const auto& profileParameters = envelopeProfiles[profile];
+            auto& node = extraNodes[profile][extra];
+            node.active = profileParameters.extraActive[extra] != nullptr
+                && profileParameters.extraActive[extra]->load() >= 0.5f;
+            node.phase = profileParameters.extraPhase[extra] != nullptr
+                ? juce::jlimit(0.05f, 0.95f, profileParameters.extraPhase[extra]->load())
+                : 0.5f;
+            node.gain = profileParameters.extraGain[extra] != nullptr
+                ? juce::jlimit(0.0f, 1.0f, profileParameters.extraGain[extra]->load())
+                : 0.5f;
+        }
+    }
 
     auto bpm = 120.0;
     auto ppqPosition = 0.0;
@@ -513,27 +646,31 @@ void StepBloomAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                 break;
         }
 
-        const auto duckWidth = smoothedDuckWidth.getNextValue();
-        const auto attackTime = smoothedAttackTime.getNextValue();
-        const auto minGain = smoothedMinGain.getNextValue();
-        const auto releaseTension = juce::jlimit(
-            0.2f, 1.5f, smoothedReleaseTension.getNextValue());
-        const auto endFadeOffset = smoothedEndFadeOffset.getNextValue();
-        const auto endGain = smoothedEndGain.getNextValue();
-        const auto attackPhase = static_cast<float>(
-            static_cast<double>(attackTime) / juce::jmax(cycleMilliseconds, 1.0e-6f));
-        const auto boundedAttackPhase = juce::jmin(attackPhase, duckWidth * 0.5f);
-        const auto envelope = evaluateEnvelope(
-            static_cast<float>(phase), boundedAttackPhase, duckWidth,
-            minGain, releaseTension, endFadeOffset, endGain);
-        const auto envelopeGain = isPlayingEnvelope ? envelope : 1.0f;
+        std::array<float, 4> envelopeGains{};
+        for (size_t profile = 0; profile < envelopeGains.size(); ++profile)
+        {
+            auto& smoothers = smoothedEnvelopeProfiles[profile];
+            const auto attackTime = smoothers[0].getNextValue();
+            const auto startGain = smoothers[1].getNextValue();
+            const auto duckWidth = smoothers[2].getNextValue();
+            const auto tension = smoothers[3].getNextValue();
+            const auto tailOffset = smoothers[4].getNextValue();
+            const auto endGain = smoothers[5].getNextValue();
+            const auto attackPhase = static_cast<float>(
+                static_cast<double>(attackTime) / juce::jmax(cycleMilliseconds, 1.0e-6f));
+            const auto boundedAttackPhase = juce::jmin(attackPhase, duckWidth * 0.5f);
+            envelopeGains[profile] = isPlayingEnvelope
+                ? evaluateProfileEnvelope(static_cast<float>(phase), boundedAttackPhase,
+                    duckWidth, startGain, tension, tailOffset, endGain, extraNodes[profile])
+                : 1.0f;
+        }
         std::array<float, 3> effectiveBandGains{};
         for (size_t band = 0; band < effectiveBandGains.size(); ++band)
         {
             const auto isExcludedBySolo = anyBandSoloed && ! bandSoloed[band];
             const auto amount = bandBypassed[band] ? 0.0f : depth * duckAmounts[band];
             const auto targetGain = isExcludedBySolo
-                ? 0.0f : 1.0f - amount * (1.0f - envelopeGain);
+                ? 0.0f : 1.0f - amount * (1.0f - envelopeGains[band + 1]);
             smoothedBandGains[band].setTargetValue(targetGain);
             effectiveBandGains[band] = smoothedBandGains[band].getNextValue();
         }
@@ -546,7 +683,7 @@ void StepBloomAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             auto& output = outputBuffer.getWritePointer(channel)[sample];
             const auto inputSample = output;
             spectrumSample += inputSample;
-            const auto singlebandGain = 1.0f - depth * (1.0f - envelopeGain);
+            const auto singlebandGain = 1.0f - depth * (1.0f - envelopeGains[0]);
             const auto singlebandOutput = inputSample * singlebandGain;
             if (isMultibandRequested || modeBlend > 0.0f)
             {
@@ -685,7 +822,11 @@ void StepBloomAudioProcessor::setStateInformation(const void* data, int sizeInBy
     if (const auto xml = getXmlFromBinary(data, sizeInBytes))
     {
         if (xml->hasTagName(parameters.state.getType()))
-            parameters.replaceState(juce::ValueTree::fromXml(*xml));
+        {
+            auto restoredState = juce::ValueTree::fromXml(*xml);
+            migrateLegacyEnvelopeState(restoredState);
+            parameters.replaceState(restoredState);
+        }
     }
 }
 

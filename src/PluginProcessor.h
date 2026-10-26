@@ -63,6 +63,17 @@ public:
     static float evaluateEnvelope(float phase, float attackPhase, float duckWidth,
                                   float startGain, float curveTension,
                                   float endFadeOffset, float endGain) noexcept;
+    struct ExtraEnvelopeNode
+    {
+        bool active = false;
+        float phase = 0.5f;
+        float gain = 0.5f;
+    };
+    static float evaluateProfileEnvelope(float phase, float attackPhase, float duckWidth,
+                                         float startGain, float curveTension,
+                                         float endFadeOffset, float endGain,
+                                         const std::array<ExtraEnvelopeNode, 2>& extras) noexcept;
+    static void migrateLegacyEnvelopeState(juce::ValueTree state);
 
     Parameters parameters;
     PresetManager presetManager;
@@ -89,23 +100,21 @@ private:
     std::atomic<float>* holdOffParameter = nullptr;
     std::atomic<float>* triggerModeParameter = nullptr;
     std::atomic<float>* processingModeParameter = nullptr;
-    std::atomic<float>* duckWidthParameter = nullptr;
-    std::atomic<float>* attackTimeParameter = nullptr;
-    std::atomic<float>* minGainParameter = nullptr;
-    std::atomic<float>* releaseTensionParameter = nullptr;
-    std::atomic<float>* endFadeOffsetParameter = nullptr;
-    std::atomic<float>* endGainParameter = nullptr;
+    struct EnvelopeProfileParameters
+    {
+        std::array<std::atomic<float>*, 6> fixedNodes{};
+        std::array<std::atomic<float>*, 2> extraActive{};
+        std::array<std::atomic<float>*, 2> extraPhase{};
+        std::array<std::atomic<float>*, 2> extraGain{};
+    };
+    std::array<EnvelopeProfileParameters, 4> envelopeProfiles{};
+    std::array<std::array<juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>, 6>, 4>
+        smoothedEnvelopeProfiles;
     std::atomic<float>* crossoverLowMidParameter = nullptr;
     std::atomic<float>* crossoverMidHighParameter = nullptr;
     std::array<std::atomic<float>*, 3> duckAmountParameters{};
     std::array<std::atomic<float>*, 3> bandBypassParameters{};
     std::array<std::atomic<float>*, 3> bandSoloParameters{};
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedDuckWidth;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedAttackTime;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedMinGain;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedReleaseTension;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedEndFadeOffset;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedEndGain;
     std::array<juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>, 3>
         smoothedBandGains;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedModeBlend;

@@ -14,6 +14,64 @@ const juce::Colour gridColour{0xff48421c};
 const juce::Colour accentColour{0xffffd429};
 const juce::Colour accentHighlightColour{0xfffff0a0};
 const juce::Colour textColour{0xfffff7d7};
+constexpr int baseWidth = 840;
+constexpr int baseHeightSingle = 480;
+constexpr int baseHeightMulti = 680;
+
+struct ShapeProfile
+{
+    const char* name;
+    float attackMilliseconds;
+    float floor;
+    float width;
+    float tension;
+    float tailOffset;
+    float endGain;
+};
+
+constexpr std::array<ShapeProfile, 14> shapeProfiles{{
+    {"Standard 4/4 Duck", 3.0f, 0.12f, 0.58f, 0.8f, 0.96f, 1.0f},
+    {"Punchy Exponential", 1.0f, 0.04f, 0.42f, 1.5f, 0.96f, 1.0f},
+    {"Sub Clean", 2.0f, 0.16f, 0.82f, 0.6f, 0.98f, 1.0f},
+    {"Tight Off-Beat", 0.5f, 0.03f, 0.28f, 1.25f, 0.9f, 1.0f},
+    {"Hard Square Drop", 0.0f, 0.0f, 0.35f, 1.5f, 0.8f, 1.0f},
+    {"Inverse Duck / Gate", 0.0f, 0.95f, 0.45f, 0.5f, 0.82f, 0.0f},
+    {"Double Duck", 2.0f, 0.08f, 0.36f, 1.2f, 0.91f, 0.22f},
+    {"Logarithmic Smooth", 6.0f, 0.18f, 0.72f, 0.35f, 0.98f, 1.0f},
+    {"S-Curve Rise", 3.0f, 0.1f, 0.62f, 1.0f, 0.97f, 1.0f},
+    {"Mid-Scoop / Dip", 2.0f, 0.65f, 0.55f, 1.0f, 0.94f, 0.65f},
+    {"Long Tail Release", 4.0f, 0.12f, 0.68f, 0.55f, 0.8f, 1.0f},
+    {"Aggressive Transient Scoop", 0.0f, 0.0f, 0.22f, 1.5f, 0.9f, 1.0f},
+    {"Subtle Wobble", 3.0f, 0.4f, 0.45f, 0.8f, 0.9f, 0.55f},
+    {"Flat / Bypass Shape", 3.0f, 1.0f, 0.6f, 1.0f, 0.95f, 1.0f}
+}};
+}
+
+juce::Font StepBloomLookAndFeel::getCustomFont(float size, int styleFlags)
+{
+    return juce::Font{juce::FontOptions(size, styleFlags)};
+}
+
+juce::Font StepBloomLookAndFeel::getTextButtonFont(
+    juce::TextButton&, int buttonHeight)
+{
+    return getCustomFont(juce::jlimit(8.0f, 12.0f,
+        static_cast<float>(buttonHeight) * 0.45f), juce::Font::bold);
+}
+
+juce::Font StepBloomLookAndFeel::getComboBoxFont(juce::ComboBox&)
+{
+    return getCustomFont(12.0f);
+}
+
+juce::Font StepBloomLookAndFeel::getLabelFont(juce::Label&)
+{
+    return getCustomFont(10.0f);
+}
+
+juce::Font StepBloomLookAndFeel::getPopupMenuFont()
+{
+    return getCustomFont(12.0f);
 }
 
 void StepBloomLookAndFeel::drawRotarySlider(
@@ -147,6 +205,32 @@ StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::ThreeNodeEnvelopeEditor(
     : processor(audioProcessor),
       parameters(audioProcessor.parameters)
 {
+    constexpr std::array<const char*, 4> profileNames{"MASTER", "LOW", "MID", "HIGH"};
+    for (auto* button : {&copyCurveButton, &pasteCurveButton})
+    {
+        button->setColour(juce::TextButton::buttonColourId, panelColour);
+        button->setColour(juce::TextButton::buttonOnColourId, accentColour.withAlpha(0.55f));
+        button->setColour(juce::TextButton::textColourOffId, textColour);
+        button->setColour(juce::TextButton::textColourOnId, accentHighlightColour);
+        addAndMakeVisible(*button);
+    }
+    copyCurveButton.onClick = [this] { copyActiveCurve(); };
+    pasteCurveButton.onClick = [this] { pasteCurveToActiveProfile(); };
+    pasteCurveButton.setEnabled(false);
+    for (size_t profile = 0; profile < profileTabs.size(); ++profile)
+    {
+        auto& tab = profileTabs[profile];
+        tab.setButtonText(profileNames[profile]);
+        tab.setColour(juce::TextButton::buttonColourId, panelColour);
+        tab.setColour(juce::TextButton::buttonOnColourId, accentColour.withAlpha(0.55f));
+        tab.setColour(juce::TextButton::textColourOffId, textColour);
+        tab.setColour(juce::TextButton::textColourOnId, accentHighlightColour);
+        tab.setClickingTogglesState(true);
+        tab.setRadioGroupId(29);
+        tab.onClick = [this, profile] { setActiveProfile(static_cast<int>(profile)); };
+        addAndMakeVisible(tab);
+    }
+    profileTabs[0].setToggleState(true, juce::dontSendNotification);
     const auto latestSequence = processor.getLatestWaveformSequence();
     nextWaveformSequence = latestSequence
         > static_cast<uint64_t>(StepBloomAudioProcessor::waveformFifoCapacity)
@@ -157,10 +241,117 @@ StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::ThreeNodeEnvelopeEditor(
     startTimerHz(30);
 }
 
+juce::String StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::profileParameterId(
+    const juce::String& suffix, int profile) const
+{
+    constexpr std::array<const char*, 4> profileNames{"Master", "Low", "Mid", "High"};
+    const auto index = profile < 0 ? getActiveProfile() : profile;
+    return juce::String(profileNames[static_cast<size_t>(juce::jlimit(0, 3, index))])
+        + "_" + suffix;
+}
+
+void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::setActiveProfile(int profile)
+{
+    activeProfile = juce::jlimit(0, 3, profile);
+    for (size_t index = 0; index < profileTabs.size(); ++index)
+        profileTabs[index].setToggleState(static_cast<int>(index) == activeProfile,
+                                          juce::dontSendNotification);
+    pasteCurveButton.setEnabled(curveClipboard.valid);
+    repaint();
+}
+
+void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::updateProfileTabs()
+{
+    const auto* mode = parameters.getRawParameterValue("processingMode");
+    const auto multiband = mode != nullptr && mode->load(std::memory_order_relaxed) >= 0.5f;
+    if (multiband && activeProfile == 0)
+        setActiveProfile(1);
+    else if (!multiband && activeProfile != 0)
+        setActiveProfile(0);
+
+    profileTabs[0].setVisible(!multiband);
+    for (size_t index = 1; index < profileTabs.size(); ++index)
+        profileTabs[index].setVisible(multiband);
+    resized();
+}
+
+void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::resized()
+{
+    auto area = getLocalBounds().reduced(18, 8);
+    constexpr int tabWidth = 64;
+    const auto* mode = parameters.getRawParameterValue("processingMode");
+    const auto firstVisibleTab = mode != nullptr && mode->load(std::memory_order_relaxed) >= 0.5f
+        ? 1 : 0;
+    for (size_t index = static_cast<size_t>(firstVisibleTab); index < profileTabs.size(); ++index)
+        profileTabs[index].setBounds(area.removeFromLeft(tabWidth).withHeight(25));
+    const auto visibleTabCount = firstVisibleTab == 0 ? 1 : 3;
+    area.removeFromLeft(visibleTabCount * tabWidth + 4);
+    copyCurveButton.setBounds(area.removeFromLeft(54).withHeight(25));
+    area.removeFromLeft(3);
+    pasteCurveButton.setBounds(area.removeFromLeft(58).withHeight(25));
+}
+
+void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::copyActiveCurve()
+{
+    constexpr std::array<const char*, 6> nodeIds{
+        "Node1_X", "Node1_Y", "Node2_X", "Node2_Y", "Node3_X", "Node3_Y"};
+    for (size_t node = 0; node < nodeIds.size(); ++node)
+    {
+        const auto* parameter = parameters.getRawParameterValue(profileParameterId(nodeIds[node]));
+        if (parameter == nullptr)
+            return;
+        curveClipboard.fixedNodes[node] = parameter->load();
+    }
+    for (size_t extra = 0; extra < curveClipboard.extraNodes.size(); ++extra)
+    {
+        const auto prefix = "Extra" + juce::String(extra + 1);
+        const auto* active = parameters.getRawParameterValue(
+            profileParameterId(prefix + "_Active"));
+        const auto* phase = parameters.getRawParameterValue(profileParameterId(prefix + "_X"));
+        const auto* gain = parameters.getRawParameterValue(profileParameterId(prefix + "_Y"));
+        if (active == nullptr || phase == nullptr || gain == nullptr)
+            return;
+        curveClipboard.extraNodes[extra] = {
+            active->load() >= 0.5f, phase->load(), gain->load()};
+    }
+    curveClipboard.valid = true;
+    pasteCurveButton.setEnabled(true);
+}
+
+void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::pasteCurveToActiveProfile()
+{
+    if (!curveClipboard.valid)
+        return;
+
+    constexpr std::array<const char*, 6> nodeIds{
+        "Node1_X", "Node1_Y", "Node2_X", "Node2_Y", "Node3_X", "Node3_Y"};
+    const auto setParameter = [this](const juce::String& id, float value)
+    {
+        if (auto* parameter = parameters.getParameter(profileParameterId(id)))
+        {
+            parameter->beginChangeGesture();
+            parameter->setValueNotifyingHost(parameter->convertTo0to1(value));
+            parameter->endChangeGesture();
+        }
+    };
+    for (size_t node = 0; node < nodeIds.size(); ++node)
+        setParameter(nodeIds[node], curveClipboard.fixedNodes[node]);
+
+    for (size_t extra = 0; extra < curveClipboard.extraNodes.size(); ++extra)
+    {
+        const auto prefix = "Extra" + juce::String(extra + 1);
+        const auto& node = curveClipboard.extraNodes[extra];
+        setParameter(prefix + "_X", node.phase);
+        setParameter(prefix + "_Y", node.gain);
+        setParameter(prefix + "_Active", node.active ? 1.0f : 0.0f);
+    }
+    repaint();
+}
+
 void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::paint(juce::Graphics& graphics)
 {
     const auto bounds = getLocalBounds().toFloat();
-    plotArea = bounds.reduced(18.0f, 16.0f);
+    plotArea = bounds.reduced(18.0f, 16.0f).withTrimmedTop(30.0f);
 
     graphics.setColour(juce::Colours::black.withAlpha(0.9f));
     graphics.fillRoundedRectangle(bounds.translated(0.0f, 4.0f), 12.0f);
@@ -200,12 +391,12 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::paint(juce::Graphic
     drawAdaptiveGrid(graphics);
 
     juce::Path curve;
-    const auto* widthParameter = parameters.getRawParameterValue("duckWidth");
-    const auto* attackParameter = parameters.getRawParameterValue("attackTime");
-    const auto* floorParameter = parameters.getRawParameterValue("minGain");
-    const auto* tensionParameter = parameters.getRawParameterValue("releaseTension");
-    const auto* endFadeParameter = parameters.getRawParameterValue("endFadeOffset");
-    const auto* endGainParameter = parameters.getRawParameterValue("endGain");
+    const auto* widthParameter = parameters.getRawParameterValue(profileParameterId("Node2_X"));
+    const auto* attackParameter = parameters.getRawParameterValue(profileParameterId("Node1_X"));
+    const auto* floorParameter = parameters.getRawParameterValue(profileParameterId("Node1_Y"));
+    const auto* tensionParameter = parameters.getRawParameterValue(profileParameterId("Node2_Y"));
+    const auto* endFadeParameter = parameters.getRawParameterValue(profileParameterId("Node3_X"));
+    const auto* endGainParameter = parameters.getRawParameterValue(profileParameterId("Node3_Y"));
     const auto duckWidth = widthParameter != nullptr ? widthParameter->load() : 0.6f;
     const auto attackTime = attackParameter != nullptr ? attackParameter->load() : 3.0f;
     const auto minGain = floorParameter != nullptr ? floorParameter->load() : 0.2f;
@@ -213,13 +404,25 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::paint(juce::Graphic
     const auto endFadeOffset = endFadeParameter != nullptr ? endFadeParameter->load() : 0.95f;
     const auto endGain = endGainParameter != nullptr ? endGainParameter->load() : 1.0f;
     const auto attackPhase = getAttackPhase(attackTime, duckWidth);
+    std::array<StepBloomAudioProcessor::ExtraEnvelopeNode, 2> extraNodes{};
+    for (size_t extra = 0; extra < extraNodes.size(); ++extra)
+    {
+        const auto suffix = "Extra" + juce::String(extra + 1);
+        const auto* active = parameters.getRawParameterValue(
+            profileParameterId(suffix + "_Active"));
+        const auto* phase = parameters.getRawParameterValue(profileParameterId(suffix + "_X"));
+        const auto* gain = parameters.getRawParameterValue(profileParameterId(suffix + "_Y"));
+        extraNodes[extra].active = active != nullptr && active->load() >= 0.5f;
+        extraNodes[extra].phase = phase != nullptr ? phase->load() : 0.5f;
+        extraNodes[extra].gain = gain != nullptr ? gain->load() : 0.5f;
+    }
     constexpr int curveSamples = 160;
     for (int i = 0; i <= curveSamples; ++i)
     {
         const auto phase = static_cast<float>(i) / static_cast<float>(curveSamples);
-        const auto gain = StepBloomAudioProcessor::evaluateEnvelope(
+        const auto gain = StepBloomAudioProcessor::evaluateProfileEnvelope(
             phase, attackPhase, duckWidth, minGain, releaseTension,
-            endFadeOffset, endGain);
+            endFadeOffset, endGain, extraNodes);
         const auto point = juce::Point<float>{
             plotArea.getX() + phase * plotArea.getWidth(),
             plotArea.getBottom() - gain * plotArea.getHeight()
@@ -268,11 +471,25 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::paint(juce::Graphic
     drawNode(startNode, juce::Colour{0xffe58a45});
     drawNode(recoveryNode, accentColour);
     drawNode(tailNode, juce::Colour{0xffa8d76a});
+    for (const auto& extra : extraNodes)
+    {
+        if (!extra.active)
+            continue;
+        const juce::Point<float> node{
+            plotArea.getX() + extra.phase * plotArea.getWidth(),
+            plotArea.getBottom() - extra.gain * plotArea.getHeight()};
+        graphics.setColour(juce::Colours::black.withAlpha(0.95f));
+        graphics.fillEllipse(node.x - 10.0f, node.y - 10.0f, 20.0f, 20.0f);
+        graphics.setColour(juce::Colour{0xff63d9c3});
+        graphics.drawEllipse(node.x - 8.0f, node.y - 8.0f, 16.0f, 16.0f, 2.0f);
+        graphics.setColour(accentHighlightColour);
+        graphics.fillEllipse(node.x - 4.0f, node.y - 4.0f, 8.0f, 8.0f);
+    }
 
     if (showSnapFeedback && draggedNode != DraggedNode::None)
     {
         graphics.setColour(accentHighlightColour);
-        graphics.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+        graphics.setFont(StepBloomLookAndFeel::getCustomFont(10.0f, juce::Font::bold));
         juce::Rectangle<float> tooltip{snappedGridX + 10.0f, snappedGridY - 28.0f,
                                        210.0f, 22.0f};
         tooltip = tooltip.withPosition(
@@ -288,7 +505,7 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::paint(juce::Graphic
 
     graphics.restoreState();
     graphics.setColour(accentHighlightColour.withAlpha(0.9f));
-    graphics.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+    graphics.setFont(StepBloomLookAndFeel::getCustomFont(10.0f, juce::Font::bold));
     graphics.drawText("START: ATTACK / GAIN     KNEE: WIDTH / TENSION     END: TAIL / GAIN",
                       plotArea.toNearestInt().reduced(2, 2),
                       juce::Justification::topRight, false);
@@ -296,7 +513,7 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::paint(juce::Graphic
     graphics.setColour(juce::Colour{0xffe58a45});
     graphics.fillEllipse(plotArea.getX() + 5.0f, plotArea.getY() + 4.0f, 6.0f, 6.0f);
     graphics.setColour(textColour);
-    graphics.setFont(juce::FontOptions(9.0f, juce::Font::bold));
+    graphics.setFont(StepBloomLookAndFeel::getCustomFont(9.0f, juce::Font::bold));
     graphics.drawText("SIDECHAIN", static_cast<int>(plotArea.getX() + 14.0f),
                       static_cast<int>(plotArea.getY() + 1.0f), 68, 12,
                       juce::Justification::centredLeft, false);
@@ -397,6 +614,7 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::drawWaveformLayer(
 
 void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::timerCallback()
 {
+    updateProfileTabs();
     const auto latestSequence = processor.getLatestWaveformSequence();
     if (latestSequence < nextWaveformSequence)
     {
@@ -468,12 +686,16 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::addWaveformFrame(
 void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::mouseDown(
     const juce::MouseEvent& event)
 {
-    const auto* attackParameter = parameters.getRawParameterValue("attackTime");
-    const auto* floorParameter = parameters.getRawParameterValue("minGain");
-    const auto* widthParameter = parameters.getRawParameterValue("duckWidth");
-    const auto* tensionParameter = parameters.getRawParameterValue("releaseTension");
-    const auto* fadeParameter = parameters.getRawParameterValue("endFadeOffset");
-    const auto* endGainParameter = parameters.getRawParameterValue("endGain");
+    if (event.getNumberOfClicks() > 1)
+        return;
+
+    draggedProfile = activeProfile;
+    const auto* attackParameter = parameters.getRawParameterValue(profileParameterId("Node1_X"));
+    const auto* floorParameter = parameters.getRawParameterValue(profileParameterId("Node1_Y"));
+    const auto* widthParameter = parameters.getRawParameterValue(profileParameterId("Node2_X"));
+    const auto* tensionParameter = parameters.getRawParameterValue(profileParameterId("Node2_Y"));
+    const auto* fadeParameter = parameters.getRawParameterValue(profileParameterId("Node3_X"));
+    const auto* endGainParameter = parameters.getRawParameterValue(profileParameterId("Node3_Y"));
     const auto attackTime = attackParameter != nullptr ? attackParameter->load() : 3.0f;
     const auto minGain = floorParameter != nullptr ? floorParameter->load() : 0.2f;
     const auto duckWidth = widthParameter != nullptr ? widthParameter->load() : 0.6f;
@@ -484,28 +706,64 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::mouseDown(
     const auto recoveryNode = getEndNodePosition(duckWidth, releaseTension);
     const auto tailNode = getTailNodePosition(endFadeOffset, endGain);
 
-    if (event.position.getDistanceFrom(startNode) <= 16.0f)
+    auto hitExtra = -1;
+    for (int extra = 0; extra < 2; ++extra)
+    {
+        const auto suffix = "Extra" + juce::String(extra + 1);
+        const auto* active = parameters.getRawParameterValue(
+            profileParameterId(suffix + "_Active"));
+        const auto* phase = parameters.getRawParameterValue(profileParameterId(suffix + "_X"));
+        const auto* gain = parameters.getRawParameterValue(profileParameterId(suffix + "_Y"));
+        if (active == nullptr || active->load() < 0.5f)
+            continue;
+        const juce::Point<float> position{
+            plotArea.getX() + (phase != nullptr ? phase->load() : 0.5f) * plotArea.getWidth(),
+            plotArea.getBottom() - (gain != nullptr ? gain->load() : 0.5f) * plotArea.getHeight()};
+        if (event.position.getDistanceFrom(position) <= 16.0f)
+        {
+            hitExtra = extra;
+            break;
+        }
+    }
+
+    if (hitExtra >= 0)
+    {
+        draggedExtraIndex = hitExtra;
+        draggedNode = hitExtra == 0 ? DraggedNode::Extra1 : DraggedNode::Extra2;
+        const auto suffix = "Extra" + juce::String(hitExtra + 1);
+        for (const auto& parameterSuffix : {"_X", "_Y"})
+            if (auto* parameter = parameters.getParameter(
+                    profileParameterId(suffix + parameterSuffix, draggedProfile)))
+                parameter->beginChangeGesture();
+    }
+    else if (event.position.getDistanceFrom(startNode) <= 16.0f)
     {
         draggedNode = DraggedNode::Start;
-        if (auto* parameter = parameters.getParameter("attackTime"))
+        if (auto* parameter = parameters.getParameter(
+                profileParameterId("Node1_X", draggedProfile)))
             parameter->beginChangeGesture();
-        if (auto* parameter = parameters.getParameter("minGain"))
+        if (auto* parameter = parameters.getParameter(
+                profileParameterId("Node1_Y", draggedProfile)))
             parameter->beginChangeGesture();
     }
     else if (event.position.getDistanceFrom(recoveryNode) <= 16.0f)
     {
         draggedNode = DraggedNode::Recovery;
-        if (auto* parameter = parameters.getParameter("duckWidth"))
+        if (auto* parameter = parameters.getParameter(
+                profileParameterId("Node2_X", draggedProfile)))
             parameter->beginChangeGesture();
-        if (auto* parameter = parameters.getParameter("releaseTension"))
+        if (auto* parameter = parameters.getParameter(
+                profileParameterId("Node2_Y", draggedProfile)))
             parameter->beginChangeGesture();
     }
     else if (event.position.getDistanceFrom(tailNode) <= 16.0f)
     {
         draggedNode = DraggedNode::End;
-        if (auto* parameter = parameters.getParameter("endFadeOffset"))
+        if (auto* parameter = parameters.getParameter(
+                profileParameterId("Node3_X", draggedProfile)))
             parameter->beginChangeGesture();
-        if (auto* parameter = parameters.getParameter("endGain"))
+        if (auto* parameter = parameters.getParameter(
+                profileParameterId("Node3_Y", draggedProfile)))
             parameter->beginChangeGesture();
     }
 
@@ -514,6 +772,98 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::mouseDown(
         showSnapFeedback = false;
         setMouseCursor(juce::MouseCursor::DraggingHandCursor);
     }
+}
+
+void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::mouseDoubleClick(
+    const juce::MouseEvent& event)
+{
+    if (!plotArea.contains(event.position) || plotArea.getWidth() <= 0.0f
+        || plotArea.getHeight() <= 0.0f)
+        return;
+
+    auto deleteIndex = -1;
+    for (int extra = 0; extra < 2; ++extra)
+    {
+        const auto suffix = "Extra" + juce::String(extra + 1);
+        const auto* active = parameters.getRawParameterValue(
+            profileParameterId(suffix + "_Active"));
+        const auto* phase = parameters.getRawParameterValue(profileParameterId(suffix + "_X"));
+        const auto* gain = parameters.getRawParameterValue(profileParameterId(suffix + "_Y"));
+        if (active == nullptr || active->load() < 0.5f)
+            continue;
+        const juce::Point<float> node{
+            plotArea.getX() + (phase != nullptr ? phase->load() : 0.5f) * plotArea.getWidth(),
+            plotArea.getBottom() - (gain != nullptr ? gain->load() : 0.5f) * plotArea.getHeight()};
+        if (event.position.getDistanceFrom(node) <= 16.0f)
+        {
+            deleteIndex = extra;
+            break;
+        }
+    }
+
+    const auto extraName = "Extra" + juce::String(deleteIndex >= 0 ? deleteIndex + 1 : 1);
+    const auto activeId = profileParameterId(extraName + "_Active");
+    if (deleteIndex >= 0)
+    {
+        if (auto* parameter = parameters.getParameter(activeId))
+        {
+            parameter->beginChangeGesture();
+            parameter->setValueNotifyingHost(parameter->convertTo0to1(0.0f));
+            parameter->endChangeGesture();
+        }
+        repaint();
+        return;
+    }
+
+    const auto* attackParameter = parameters.getRawParameterValue(profileParameterId("Node1_X"));
+    const auto* floorParameter = parameters.getRawParameterValue(profileParameterId("Node1_Y"));
+    const auto* widthParameter = parameters.getRawParameterValue(profileParameterId("Node2_X"));
+    const auto* tensionParameter = parameters.getRawParameterValue(profileParameterId("Node2_Y"));
+    const auto* fadeParameter = parameters.getRawParameterValue(profileParameterId("Node3_X"));
+    const auto* endGainParameter = parameters.getRawParameterValue(profileParameterId("Node3_Y"));
+    const auto attackTime = attackParameter != nullptr ? attackParameter->load() : 3.0f;
+    const auto minGain = floorParameter != nullptr ? floorParameter->load() : 0.2f;
+    const auto duckWidth = widthParameter != nullptr ? widthParameter->load() : 0.6f;
+    const auto tension = tensionParameter != nullptr ? tensionParameter->load() : 1.0f;
+    const auto tailOffset = fadeParameter != nullptr ? fadeParameter->load() : 0.95f;
+    const auto endGain = endGainParameter != nullptr ? endGainParameter->load() : 1.0f;
+    if (event.position.getDistanceFrom(getStartNodePosition(attackTime, minGain, duckWidth))
+            <= 16.0f
+        || event.position.getDistanceFrom(getEndNodePosition(duckWidth, tension)) <= 16.0f
+        || event.position.getDistanceFrom(getTailNodePosition(tailOffset, endGain)) <= 16.0f)
+        return;
+
+    auto availableIndex = -1;
+    for (int extra = 0; extra < 2; ++extra)
+    {
+        const auto* active = parameters.getRawParameterValue(
+            profileParameterId("Extra" + juce::String(extra + 1) + "_Active"));
+        if (active == nullptr || active->load() < 0.5f)
+        {
+            availableIndex = extra;
+            break;
+        }
+    }
+    if (availableIndex < 0)
+        return;
+
+    const auto phase = juce::jlimit(0.05f, 0.95f,
+        (event.position.x - plotArea.getX()) / plotArea.getWidth());
+    const auto gain = juce::jlimit(0.0f, 1.0f,
+        (plotArea.getBottom() - event.position.y) / plotArea.getHeight());
+    const auto nodePrefix = "Extra" + juce::String(availableIndex + 1);
+    for (const auto& update : {std::pair<juce::String, float>{nodePrefix + "_X", phase},
+                               {nodePrefix + "_Y", gain},
+                               {nodePrefix + "_Active", 1.0f}})
+    {
+        if (auto* parameter = parameters.getParameter(profileParameterId(update.first)))
+        {
+            parameter->beginChangeGesture();
+            parameter->setValueNotifyingHost(parameter->convertTo0to1(update.second));
+            parameter->endChangeGesture();
+        }
+    }
+    repaint();
 }
 
 void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::mouseDrag(
@@ -611,24 +961,39 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::updateNode(
     };
     auto setParameter = [this](const char* id, float value)
     {
-        if (auto* parameter = parameters.getParameter(id))
+        if (auto* parameter = parameters.getParameter(profileParameterId(id, draggedProfile)))
             parameter->setValueNotifyingHost(parameter->convertTo0to1(value));
     };
     auto snappedGainDb = gainPosition > 0.0f
         ? juce::String(20.0f * std::log10(gainPosition), 1) + " dB"
         : juce::String("-inf dB");
 
-    if (draggedNode == DraggedNode::Start)
+    if (draggedNode == DraggedNode::Extra1 || draggedNode == DraggedNode::Extra2)
     {
-        const auto* widthParameter = parameters.getRawParameterValue("duckWidth");
+        const auto nodePrefix = "Extra" + juce::String(draggedExtraIndex + 1);
+        phase = snapPhaseWithinRange(phase, 0.05f, 0.95f);
+        snappedGridX = plotArea.getX() + phase * plotArea.getWidth();
+        const auto activeProfileId = profileParameterId(nodePrefix + "_X", draggedProfile);
+        const auto gainProfileId = profileParameterId(nodePrefix + "_Y", draggedProfile);
+        if (auto* parameter = parameters.getParameter(activeProfileId))
+            parameter->setValueNotifyingHost(parameter->convertTo0to1(phase));
+        if (auto* parameter = parameters.getParameter(gainProfileId))
+            parameter->setValueNotifyingHost(parameter->convertTo0to1(gainPosition));
+        dragTooltip = "Phase: " + juce::String(phase, 2) + " (grid 1/"
+            + juce::String(divisions) + ") | Gain: " + snappedGainDb;
+    }
+    else if (draggedNode == DraggedNode::Start)
+    {
+        const auto* widthParameter = parameters.getRawParameterValue(
+            profileParameterId("Node2_X", draggedProfile));
         const auto duckWidth = widthParameter != nullptr ? widthParameter->load() : 0.6f;
         const auto maxAttackPhase = juce::jmin(duckWidth * 0.5f,
             15.0f / juce::jmax(processor.getCycleDurationMilliseconds(), 1.0e-3f));
         const auto attackPhase = snapPhaseWithinRange(phase, 0.0f, maxAttackPhase);
         const auto attackTime = attackPhase * processor.getCycleDurationMilliseconds();
         snappedGridX = plotArea.getX() + attackPhase * plotArea.getWidth();
-        setParameter("attackTime", attackTime);
-        setParameter("minGain", gainPosition);
+        setParameter("Node1_X", attackTime);
+        setParameter("Node1_Y", gainPosition);
         dragTooltip = "Phase: " + juce::String(attackPhase, 2) + " (grid 1/"
             + juce::String(divisions) + ") | Gain: " + snappedGainDb;
     }
@@ -638,8 +1003,8 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::updateNode(
         const auto curveTension = juce::jlimit(0.2f, 1.5f,
             0.2f + 1.3f * gainPosition);
         snappedGridX = plotArea.getX() + duckWidth * plotArea.getWidth();
-        setParameter("duckWidth", duckWidth);
-        setParameter("releaseTension", curveTension);
+        setParameter("Node2_X", duckWidth);
+        setParameter("Node2_Y", curveTension);
         dragTooltip = "Phase: " + juce::String(duckWidth, 2) + " (grid 1/"
             + juce::String(divisions) + ") | Tension: "
             + juce::String(curveTension, 2);
@@ -648,8 +1013,8 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::updateNode(
     {
         const auto endFadeOffset = snapPhaseWithinRange(phase, 0.8f, 1.0f);
         snappedGridX = plotArea.getX() + endFadeOffset * plotArea.getWidth();
-        setParameter("endFadeOffset", endFadeOffset);
-        setParameter("endGain", gainPosition);
+        setParameter("Node3_X", endFadeOffset);
+        setParameter("Node3_Y", gainPosition);
         dragTooltip = "Phase: " + juce::String(endFadeOffset, 2) + " (grid 1/"
             + juce::String(divisions) + ") | Gain: " + snappedGainDb;
     }
@@ -702,7 +1067,7 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::drawAdaptiveGrid(
             : gain == 0.0f ? "-inf"
             : "-2.5 dB";
         graphics.setColour(textColour.withAlpha(0.68f));
-        graphics.setFont(juce::FontOptions(8.0f));
+        graphics.setFont(StepBloomLookAndFeel::getCustomFont(8.0f));
         graphics.drawText(label, juce::Rectangle<int>{
             juce::roundToInt(plotArea.getX() + 3.0f),
             juce::roundToInt(y - 9.0f), 38, 12},
@@ -714,28 +1079,200 @@ void StepBloomAudioProcessorEditor::ThreeNodeEnvelopeEditor::endGesture()
 {
     if (draggedNode == DraggedNode::Start)
     {
-        if (auto* parameter = parameters.getParameter("attackTime"))
+        if (auto* parameter = parameters.getParameter(
+                profileParameterId("Node1_X", draggedProfile)))
             parameter->endChangeGesture();
-        if (auto* parameter = parameters.getParameter("minGain"))
+        if (auto* parameter = parameters.getParameter(
+                profileParameterId("Node1_Y", draggedProfile)))
             parameter->endChangeGesture();
     }
     else if (draggedNode == DraggedNode::Recovery)
     {
-        if (auto* parameter = parameters.getParameter("duckWidth"))
+        if (auto* parameter = parameters.getParameter(
+                profileParameterId("Node2_X", draggedProfile)))
             parameter->endChangeGesture();
-        if (auto* parameter = parameters.getParameter("releaseTension"))
+        if (auto* parameter = parameters.getParameter(
+                profileParameterId("Node2_Y", draggedProfile)))
             parameter->endChangeGesture();
     }
     else if (draggedNode == DraggedNode::End)
     {
-        if (auto* parameter = parameters.getParameter("endFadeOffset"))
+        if (auto* parameter = parameters.getParameter(
+                profileParameterId("Node3_X", draggedProfile)))
             parameter->endChangeGesture();
-        if (auto* parameter = parameters.getParameter("endGain"))
+        if (auto* parameter = parameters.getParameter(
+                profileParameterId("Node3_Y", draggedProfile)))
             parameter->endChangeGesture();
+    }
+    else if (draggedNode == DraggedNode::Extra1 || draggedNode == DraggedNode::Extra2)
+    {
+        const auto prefix = "Extra" + juce::String(draggedExtraIndex + 1);
+        for (const auto& suffix : {"_X", "_Y"})
+            if (auto* parameter = parameters.getParameter(
+                    profileParameterId(prefix + suffix, draggedProfile)))
+                parameter->endChangeGesture();
+        draggedExtraIndex = -1;
     }
     draggedNode = DraggedNode::None;
     showSnapFeedback = false;
     setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    repaint();
+}
+
+StepBloomAudioProcessorEditor::ShapeProfileGridComponent::ShapeProfileGridComponent(
+    StepBloomAudioProcessor& audioProcessor, ThreeNodeEnvelopeEditor& editor)
+    : processor(audioProcessor),
+      envelopeEditor(editor)
+{
+    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+}
+
+juce::String StepBloomAudioProcessorEditor::ShapeProfileGridComponent::parameterId(
+    const juce::String& suffix) const
+{
+    constexpr std::array<const char*, 4> profileNames{"Master", "Low", "Mid", "High"};
+    const auto* mode = processor.parameters.getRawParameterValue("processingMode");
+    auto profile = mode != nullptr && mode->load(std::memory_order_relaxed) >= 0.5f
+        ? envelopeEditor.getActiveProfile() : 0;
+    profile = juce::jlimit(0, 3, profile);
+    return juce::String(profileNames[static_cast<size_t>(profile)]) + "_" + suffix;
+}
+
+void StepBloomAudioProcessorEditor::ShapeProfileGridComponent::resized()
+{
+    const auto bounds = getLocalBounds().toFloat().reduced(1.0f);
+    constexpr int columns = 7;
+    constexpr int rows = 2;
+    constexpr float gap = 4.0f;
+    const auto cellWidth = (bounds.getWidth() - gap * (columns - 1)) / columns;
+    const auto cellHeight = (bounds.getHeight() - gap * (rows - 1)) / rows;
+    for (size_t index = 0; index < buttonBounds.size(); ++index)
+    {
+        const auto row = static_cast<int>(index) / columns;
+        const auto column = static_cast<int>(index) % columns;
+        buttonBounds[index] = {
+            bounds.getX() + static_cast<float>(column) * (cellWidth + gap),
+            bounds.getY() + static_cast<float>(row) * (cellHeight + gap),
+            cellWidth, cellHeight
+        };
+    }
+}
+
+bool StepBloomAudioProcessorEditor::ShapeProfileGridComponent::profileMatches(int index) const
+{
+    if (!juce::isPositiveAndBelow(index, static_cast<int>(shapeProfiles.size())))
+        return false;
+    const auto& preset = shapeProfiles[static_cast<size_t>(index)];
+    constexpr std::array<const char*, 6> suffixes{
+        "Node1_X", "Node1_Y", "Node2_X", "Node2_Y", "Node3_X", "Node3_Y"};
+    const std::array<float, 6> values{
+        preset.attackMilliseconds, preset.floor, preset.width,
+        preset.tension, preset.tailOffset, preset.endGain};
+    constexpr std::array<float, 6> tolerances{0.011f, 0.0011f, 0.0011f,
+                                              0.0011f, 0.0011f, 0.0011f};
+    for (size_t node = 0; node < suffixes.size(); ++node)
+    {
+        const auto* parameter = processor.parameters.getRawParameterValue(
+            parameterId(suffixes[node]));
+        if (parameter == nullptr || std::abs(parameter->load() - values[node]) > tolerances[node])
+            return false;
+    }
+    for (int extra = 1; extra <= 2; ++extra)
+    {
+        const auto* active = processor.parameters.getRawParameterValue(
+            parameterId("Extra" + juce::String(extra) + "_Active"));
+        if (active != nullptr && active->load() >= 0.5f)
+            return false;
+    }
+    return true;
+}
+
+void StepBloomAudioProcessorEditor::ShapeProfileGridComponent::paint(
+    juce::Graphics& graphics)
+{
+    for (size_t index = 0; index < buttonBounds.size(); ++index)
+    {
+        const auto bounds = buttonBounds[index];
+        const auto selected = profileMatches(static_cast<int>(index));
+        graphics.setColour(selected ? accentColour.withAlpha(0.42f)
+                                    : panelColour.withAlpha(0.95f));
+        graphics.fillRoundedRectangle(bounds, 3.0f);
+        graphics.setColour(selected ? accentHighlightColour : accentColour.withAlpha(0.65f));
+        graphics.drawRoundedRectangle(bounds.reduced(0.5f), 3.0f, selected ? 1.5f : 0.8f);
+
+        const auto& preset = shapeProfiles[index];
+        const auto cycleMilliseconds = juce::jmax(
+            1.0f, processor.getCycleDurationMilliseconds());
+        const auto attackPhase = preset.attackMilliseconds / cycleMilliseconds;
+        juce::Path path;
+        constexpr int samples = 24;
+        for (int sample = 0; sample <= samples; ++sample)
+        {
+            const auto phase = static_cast<float>(sample) / static_cast<float>(samples);
+            const auto gain = StepBloomAudioProcessor::evaluateEnvelope(
+                phase, attackPhase, preset.width, preset.floor, preset.tension,
+                preset.tailOffset, preset.endGain);
+            const auto point = juce::Point<float>{
+                bounds.getX() + 3.0f + phase * (bounds.getWidth() - 6.0f),
+                bounds.getY() + 3.0f + (1.0f - gain) * (bounds.getHeight() - 10.0f)};
+            if (sample == 0)
+                path.startNewSubPath(point);
+            else
+                path.lineTo(point);
+        }
+        graphics.setColour(selected ? accentHighlightColour : textColour);
+        graphics.strokePath(path, juce::PathStrokeType(1.2f));
+        graphics.setColour(textColour.withAlpha(0.72f));
+        graphics.setFont(StepBloomLookAndFeel::getCustomFont(7.0f, juce::Font::bold));
+        graphics.drawText(juce::String(static_cast<int>(index) + 1),
+                          bounds.withHeight(11.0f).removeFromBottom(11.0f).toNearestInt(),
+                          juce::Justification::centred, false);
+    }
+}
+
+void StepBloomAudioProcessorEditor::ShapeProfileGridComponent::mouseDown(
+    const juce::MouseEvent& event)
+{
+    for (size_t index = 0; index < buttonBounds.size(); ++index)
+        if (buttonBounds[index].contains(event.position))
+        {
+            applyProfile(static_cast<int>(index));
+            return;
+        }
+}
+
+juce::String StepBloomAudioProcessorEditor::ShapeProfileGridComponent::getTooltip()
+{
+        const auto mousePosition = getMouseXYRelative().toFloat();
+        for (size_t index = 0; index < buttonBounds.size(); ++index)
+            if (buttonBounds[index].contains(mousePosition))
+                return shapeProfiles[index].name;
+        return {};
+}
+
+void StepBloomAudioProcessorEditor::ShapeProfileGridComponent::applyProfile(int index)
+{
+    if (!juce::isPositiveAndBelow(index, static_cast<int>(shapeProfiles.size())))
+        return;
+    const auto& preset = shapeProfiles[static_cast<size_t>(index)];
+    constexpr std::array<const char*, 6> suffixes{
+        "Node1_X", "Node1_Y", "Node2_X", "Node2_Y", "Node3_X", "Node3_Y"};
+    const std::array<float, 6> values{
+        preset.attackMilliseconds, preset.floor, preset.width,
+        preset.tension, preset.tailOffset, preset.endGain};
+    const auto setParameter = [this](const juce::String& id, float value)
+    {
+        if (auto* parameter = processor.parameters.getParameter(parameterId(id)))
+        {
+            parameter->beginChangeGesture();
+            parameter->setValueNotifyingHost(parameter->convertTo0to1(value));
+            parameter->endChangeGesture();
+        }
+    };
+    for (size_t node = 0; node < suffixes.size(); ++node)
+        setParameter(suffixes[node], values[node]);
+    setParameter("Extra1_Active", 0.0f);
+    setParameter("Extra2_Active", 0.0f);
     repaint();
 }
 
@@ -749,7 +1286,8 @@ StepBloomAudioProcessorEditor::CrossoverPanelComponent::CrossoverPanelComponent(
     {
         bandLabels[band].setText(names[band], juce::dontSendNotification);
         bandLabels[band].setColour(juce::Label::textColourId, accentHighlightColour);
-        bandLabels[band].setFont(juce::FontOptions(10.0f, juce::Font::bold));
+        bandLabels[band].setFont(StepBloomLookAndFeel::getCustomFont(
+            10.0f, juce::Font::bold));
         addAndMakeVisible(bandLabels[band]);
 
         auto& slider = duckAmountSliders[band];
@@ -829,7 +1367,7 @@ void StepBloomAudioProcessorEditor::CrossoverPanelComponent::paint(juce::Graphic
         graphics.drawHorizontalLine(juce::roundToInt(y), spectrumArea.getX(),
                                     spectrumArea.getRight());
         graphics.setColour(textColour.withAlpha(0.55f));
-        graphics.setFont(juce::FontOptions(8.0f));
+        graphics.setFont(StepBloomLookAndFeel::getCustomFont(8.0f));
         graphics.drawText(juce::String(db) + " dB",
             juce::Rectangle<int>{juce::roundToInt(spectrumArea.getX() + 2.0f),
                 juce::roundToInt(y - 8.0f), 34, 12},
@@ -879,7 +1417,7 @@ void StepBloomAudioProcessorEditor::CrossoverPanelComponent::paint(juce::Graphic
     graphics.fillEllipse(highX - 5.0f, spectrumArea.getY() - 1.0f, 10.0f, 10.0f);
 
     graphics.setColour(textColour.withAlpha(0.75f));
-    graphics.setFont(juce::FontOptions(8.0f));
+    graphics.setFont(StepBloomLookAndFeel::getCustomFont(8.0f));
     for (const auto frequency : {20, 100, 1000, 10000, 20000})
     {
         if (static_cast<float>(frequency) > maximumFrequency)
@@ -892,7 +1430,7 @@ void StepBloomAudioProcessorEditor::CrossoverPanelComponent::paint(juce::Graphic
             juce::Justification::centred, false);
     }
     graphics.setColour(accentHighlightColour);
-    graphics.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+    graphics.setFont(StepBloomLookAndFeel::getCustomFont(10.0f, juce::Font::bold));
     graphics.drawText("MULTIBAND CROSSOVER / INPUT SPECTRUM",
         juce::Rectangle<int>{14, 2, getWidth() - 28, 12},
         juce::Justification::centredLeft, false);
@@ -907,7 +1445,7 @@ void StepBloomAudioProcessorEditor::CrossoverPanelComponent::paintOverChildren(
     graphics.setColour(juce::Colours::black.withAlpha(0.65f));
     graphics.fillAll();
     graphics.setColour(textColour.withAlpha(0.82f));
-    graphics.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+    graphics.setFont(StepBloomLookAndFeel::getCustomFont(12.0f, juce::Font::bold));
     graphics.drawText("MULTIBAND DISABLED - SWITCH TO MULTI MODE TO ENABLE",
                       getLocalBounds(), juce::Justification::centred, true);
 }
@@ -1049,10 +1587,18 @@ StepBloomAudioProcessorEditor::StepBloomAudioProcessorEditor(
     : AudioProcessorEditor(&audioProcessor),
       processor(audioProcessor),
       envelopeEditor(audioProcessor),
-      crossoverPanel(audioProcessor)
+      shapeProfileGrid(audioProcessor, envelopeEditor),
+      crossoverPanel(audioProcessor),
+      tooltipWindow(this, 700)
 {
-    setSize(800, 700);
+    setLookAndFeel(&lookAndFeel);
     processingModeValue = processor.parameters.getRawParameterValue("processingMode");
+    isMultibandLayout = processingModeValue == nullptr
+        || processingModeValue->load(std::memory_order_relaxed) >= 0.5f;
+    const auto* scaleParameter = processor.parameters.getRawParameterValue("userScaleFactor");
+    uiScaleFactor = scaleParameter != nullptr
+        ? scaleParameter->load(std::memory_order_relaxed)
+        : processor.getPresetManager().getUserDefaultZoom();
 
     singlebandModeButton.setClickingTogglesState(true);
     multibandModeButton.setClickingTogglesState(true);
@@ -1124,10 +1670,11 @@ StepBloomAudioProcessorEditor::StepBloomAudioProcessorEditor(
     addAndMakeVisible(settingsButton);
     refreshPresetList();
     addAndMakeVisible(crossoverPanel);
+    addAndMakeVisible(shapeProfileGrid);
 
     depthLabel.setText("MIX", juce::dontSendNotification);
     depthLabel.setColour(juce::Label::textColourId, accentHighlightColour);
-    depthLabel.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+    depthLabel.setFont(StepBloomLookAndFeel::getCustomFont(12.0f, juce::Font::bold));
     addAndMakeVisible(depthLabel);
 
     depthSlider.setLookAndFeel(&lookAndFeel);
@@ -1146,7 +1693,7 @@ StepBloomAudioProcessorEditor::StepBloomAudioProcessorEditor(
 
     thresholdLabel.setText("SIDECHAIN THRESHOLD", juce::dontSendNotification);
     thresholdLabel.setColour(juce::Label::textColourId, accentHighlightColour);
-    thresholdLabel.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+    thresholdLabel.setFont(StepBloomLookAndFeel::getCustomFont(10.0f, juce::Font::bold));
     addAndMakeVisible(thresholdLabel);
 
     thresholdSlider.setLookAndFeel(&lookAndFeel);
@@ -1166,7 +1713,7 @@ StepBloomAudioProcessorEditor::StepBloomAudioProcessorEditor(
 
     triggerModeLabel.setText("TRIGGER MODE", juce::dontSendNotification);
     triggerModeLabel.setColour(juce::Label::textColourId, accentHighlightColour);
-    triggerModeLabel.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+    triggerModeLabel.setFont(StepBloomLookAndFeel::getCustomFont(10.0f, juce::Font::bold));
     addAndMakeVisible(triggerModeLabel);
 
     triggerModeBox.addItemList(
@@ -1182,7 +1729,7 @@ StepBloomAudioProcessorEditor::StepBloomAudioProcessorEditor(
 
     holdOffLabel.setText("HOLD-OFF", juce::dontSendNotification);
     holdOffLabel.setColour(juce::Label::textColourId, accentHighlightColour);
-    holdOffLabel.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+    holdOffLabel.setFont(StepBloomLookAndFeel::getCustomFont(10.0f, juce::Font::bold));
     addAndMakeVisible(holdOffLabel);
 
     holdOffSlider.setLookAndFeel(&lookAndFeel);
@@ -1217,7 +1764,7 @@ StepBloomAudioProcessorEditor::StepBloomAudioProcessorEditor(
 
     cycleLabel.setText("CYCLE", juce::dontSendNotification);
     cycleLabel.setColour(juce::Label::textColourId, accentHighlightColour);
-    cycleLabel.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+    cycleLabel.setFont(StepBloomLookAndFeel::getCustomFont(12.0f, juce::Font::bold));
     addAndMakeVisible(cycleLabel);
 
     cycleBox.addItemList(juce::StringArray{"1/2", "1/4", "1/8", "1/16"}, 1);
@@ -1230,7 +1777,15 @@ StepBloomAudioProcessorEditor::StepBloomAudioProcessorEditor(
         processor.parameters, "cycle", cycleBox);
 
     addAndMakeVisible(envelopeEditor);
-    setProcessingMode(processingModeValue != nullptr && processingModeValue->load() >= 0.5f);
+    singlebandModeButton.setToggleState(!isMultibandLayout, juce::dontSendNotification);
+    multibandModeButton.setToggleState(isMultibandLayout, juce::dontSendNotification);
+    crossoverPanel.setEnabled(isMultibandLayout);
+    crossoverPanel.setVisible(isMultibandLayout);
+    setResizeLimits(juce::roundToInt(baseWidth * 0.75f),
+                    juce::roundToInt(baseHeightSingle * 0.75f),
+                    juce::roundToInt(baseWidth * 2.0f),
+                    juce::roundToInt(baseHeightMulti * 2.0f));
+    setUiScaleFactor(uiScaleFactor, false);
 }
 
 StepBloomAudioProcessorEditor::~StepBloomAudioProcessorEditor()
@@ -1241,6 +1796,7 @@ StepBloomAudioProcessorEditor::~StepBloomAudioProcessorEditor()
     triggerModeBox.setLookAndFeel(nullptr);
     cycleBox.setLookAndFeel(nullptr);
     presetBox.setLookAndFeel(nullptr);
+    setLookAndFeel(nullptr);
     stopTimer();
 }
 
@@ -1252,10 +1808,10 @@ void StepBloomAudioProcessorEditor::paint(juce::Graphics& graphics)
     graphics.fillRect(getLocalBounds().toFloat());
 
     graphics.setColour(accentColour);
-    graphics.setFont(juce::FontOptions(21.0f, juce::Font::bold));
+    graphics.setFont(StepBloomLookAndFeel::getCustomFont(21.0f, juce::Font::bold));
     graphics.drawText("STEPBLOOM", 24, 10, 220, 26, juce::Justification::centredLeft);
     graphics.setColour(textColour);
-    graphics.setFont(juce::FontOptions(11.0f, juce::Font::bold));
+    graphics.setFont(StepBloomLookAndFeel::getCustomFont(11.0f, juce::Font::bold));
     graphics.drawText("TEMPO-SYNCED VOLUME SHAPER", 25, 36, 260, 15,
                       juce::Justification::centredLeft);
     graphics.setColour(accentColour.withAlpha(0.7f));
@@ -1267,43 +1823,61 @@ void StepBloomAudioProcessorEditor::resized()
     auto bounds = getLocalBounds().reduced(24);
     bounds.removeFromTop(52);
 
-    previousPresetButton.setBounds(292, 15, 30, 30);
-    presetBox.setBounds(328, 15, 250, 30);
-    nextPresetButton.setBounds(584, 15, 30, 30);
-    singlebandModeButton.setBounds(625, 15, 58, 30);
-    multibandModeButton.setBounds(686, 15, 54, 30);
+    const auto modeButtonsX = getWidth() - 230;
+    const auto presetNextX = juce::jmax(455, modeButtonsX - 32);
+    previousPresetButton.setBounds(286, 15, 30, 30);
+    presetBox.setBounds(322, 15, juce::jmax(130, presetNextX - 322 - 4), 30);
+    nextPresetButton.setBounds(presetNextX, 15, 28, 30);
+    singlebandModeButton.setBounds(modeButtonsX, 15, 58, 30);
+    multibandModeButton.setBounds(modeButtonsX + 61, 15, 54, 30);
     settingsButton.setBounds(getWidth() - 58, 12, 34, 34);
 
     auto controls = bounds.removeFromTop(112);
-    auto mixArea = controls.removeFromLeft(96);
+    auto mixArea = controls.removeFromLeft(72);
     depthLabel.setBounds(mixArea.removeFromTop(18));
     depthSlider.setBounds(mixArea.reduced(2, 0));
 
-    controls.removeFromLeft(12);
-    auto modeArea = controls.removeFromLeft(136);
+    controls.removeFromLeft(4);
+    auto modeArea = controls.removeFromLeft(96);
     triggerModeLabel.setBounds(modeArea.removeFromTop(18));
     triggerModeBox.setBounds(modeArea.removeFromTop(36).reduced(0, 2));
 
-    controls.removeFromLeft(12);
-    auto cycleArea = controls.removeFromLeft(92);
+    controls.removeFromLeft(4);
+    auto cycleArea = controls.removeFromLeft(64);
     cycleLabel.setBounds(cycleArea.removeFromTop(18));
     cycleBox.setBounds(cycleArea.removeFromTop(36).reduced(0, 2));
 
-    controls.removeFromLeft(12);
-    auto thresholdArea = controls.removeFromLeft(120);
+    controls.removeFromLeft(4);
+    const auto reservedForRightControls = 70 + 2 + 70;
+    const auto gridWidth = juce::jmax(250, controls.getWidth() - reservedForRightControls);
+    auto shapeArea = controls.removeFromLeft(gridWidth);
+    shapeProfileGrid.setBounds(shapeArea.reduced(0, 1));
+
+    controls.removeFromLeft(2);
+    auto thresholdArea = controls.removeFromLeft(70);
     thresholdLabel.setBounds(thresholdArea.removeFromTop(18));
     thresholdSlider.setBounds(thresholdArea.reduced(2, 0));
 
-    controls.removeFromLeft(8);
-    auto holdOffArea = controls.removeFromLeft(104);
+    controls.removeFromLeft(2);
+    auto holdOffArea = controls.removeFromLeft(70);
     holdOffLabel.setBounds(holdOffArea.removeFromTop(18));
     holdOffSlider.setBounds(holdOffArea.reduced(2, 0));
 
     bounds.removeFromTop(4);
-    auto crossoverBounds = bounds.removeFromBottom(190);
-    crossoverPanel.setBounds(crossoverBounds);
-    bounds.removeFromBottom(6);
+    if (isMultibandLayout)
+    {
+        auto crossoverBounds = bounds.removeFromBottom(190);
+        crossoverPanel.setBounds(crossoverBounds);
+        bounds.removeFromBottom(6);
+    }
+    crossoverPanel.setVisible(isMultibandLayout);
     envelopeEditor.setBounds(bounds);
+}
+
+void StepBloomAudioProcessorEditor::setScaleFactor(float newScale)
+{
+    hostScaleFactor = juce::jmax(0.01f, newScale);
+    juce::AudioProcessorEditor::setScaleFactor(hostScaleFactor * uiScaleFactor);
 }
 
 void StepBloomAudioProcessorEditor::timerCallback()
@@ -1313,6 +1887,8 @@ void StepBloomAudioProcessorEditor::timerCallback()
     singlebandModeButton.setToggleState(! isMultiband, juce::dontSendNotification);
     multibandModeButton.setToggleState(isMultiband, juce::dontSendNotification);
     crossoverPanel.setEnabled(isMultiband);
+    updateModeLayout(isMultiband);
+    shapeProfileGrid.repaint();
 }
 
 void StepBloomAudioProcessorEditor::setProcessingMode(bool multiband)
@@ -1322,6 +1898,40 @@ void StepBloomAudioProcessorEditor::setProcessingMode(bool multiband)
     singlebandModeButton.setToggleState(! multiband, juce::dontSendNotification);
     multibandModeButton.setToggleState(multiband, juce::dontSendNotification);
     crossoverPanel.setEnabled(multiband);
+    updateModeLayout(multiband);
+}
+
+void StepBloomAudioProcessorEditor::updateModeLayout(bool multiband)
+{
+    if (isMultibandLayout == multiband)
+        return;
+
+    isMultibandLayout = multiband;
+    crossoverPanel.setVisible(multiband);
+    setSize(baseWidth, multiband ? baseHeightMulti : baseHeightSingle);
+}
+
+void StepBloomAudioProcessorEditor::setUiScaleFactor(float scale, bool updateParameter)
+{
+    constexpr std::array<float, 4> supportedScales{0.75f, 1.0f, 1.5f, 2.0f};
+    uiScaleFactor = supportedScales.front();
+    for (const auto supportedScale : supportedScales)
+        if (std::abs(scale - supportedScale) < std::abs(scale - uiScaleFactor))
+            uiScaleFactor = supportedScale;
+
+    juce::AudioProcessorEditor::setScaleFactor(hostScaleFactor * uiScaleFactor);
+    setSize(baseWidth, isMultibandLayout ? baseHeightMulti : baseHeightSingle);
+    resized();
+    repaint();
+    if (updateParameter)
+    {
+        if (auto* parameter = processor.parameters.getParameter("userScaleFactor"))
+        {
+            parameter->beginChangeGesture();
+            parameter->setValueNotifyingHost(parameter->convertTo0to1(uiScaleFactor));
+            parameter->endChangeGesture();
+        }
+    }
 }
 
 void StepBloomAudioProcessorEditor::refreshPresetList()
@@ -1355,6 +1965,15 @@ void StepBloomAudioProcessorEditor::showSettingsMenu()
     juce::PopupMenu menu;
     menu.addItem(1, "Save as Default Preset");
     menu.addItem(2, "Save Preset...");
+    menu.addItem(3, "Set Default Preset Location...");
+    menu.addItem(4, "Open Presets Folder");
+    juce::PopupMenu scaleMenu;
+    scaleMenu.addItem(10, "75%", true, uiScaleFactor == 0.75f);
+    scaleMenu.addItem(11, "100% (Default)", true, uiScaleFactor == 1.0f);
+    scaleMenu.addItem(12, "150%", true, uiScaleFactor == 1.5f);
+    scaleMenu.addItem(13, "200%", true, uiScaleFactor == 2.0f);
+    menu.addSubMenu("UI Scale", scaleMenu);
+    menu.addItem(5, "Set Current Zoom as Default");
     const auto safeThis = juce::Component::SafePointer<StepBloomAudioProcessorEditor>(this);
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&settingsButton),
         [safeThis](int selection)
@@ -1362,7 +1981,18 @@ void StepBloomAudioProcessorEditor::showSettingsMenu()
             if (safeThis == nullptr)
                 return;
 
-            if (selection == 1)
+            if (selection >= 10 && selection <= 13)
+            {
+                constexpr std::array<float, 4> scales{0.75f, 1.0f, 1.5f, 2.0f};
+                safeThis->setUiScaleFactor(scales[static_cast<size_t>(selection - 10)]);
+            }
+            else if (selection == 5)
+            {
+                const auto result = safeThis->processor.getPresetManager()
+                    .setUserDefaultZoom(safeThis->uiScaleFactor);
+                safeThis->showPresetResult(result);
+            }
+            else if (selection == 1)
             {
                 const auto result = safeThis->processor.getPresetManager().saveDefaultPreset();
                 safeThis->showPresetResult(result);
@@ -1397,6 +2027,43 @@ void StepBloomAudioProcessorEditor::showSettingsMenu()
                         if (saveResult.wasOk())
                             safeEditor->refreshPresetList();
                     });
+            }
+            else if (selection == 3)
+            {
+                const auto currentDirectory = safeThis->processor.getPresetManager()
+                    .getPresetsDirectory();
+                safeThis->presetFileChooser = std::make_unique<juce::FileChooser>(
+                    "Choose StepBloom Preset Folder", currentDirectory, juce::String{});
+                const auto safeEditor = juce::Component::SafePointer<
+                    StepBloomAudioProcessorEditor>(safeThis.getComponent());
+                safeThis->presetFileChooser->launchAsync(
+                    juce::FileBrowserComponent::openMode
+                        | juce::FileBrowserComponent::canSelectDirectories,
+                    [safeEditor](const juce::FileChooser& chooser)
+                    {
+                        if (safeEditor == nullptr)
+                            return;
+                        const auto selectedDirectory = chooser.getResult();
+                        if (selectedDirectory == juce::File{})
+                            return;
+                        const auto result = safeEditor->processor.getPresetManager()
+                            .setPresetsDirectory(selectedDirectory);
+                        safeEditor->showPresetResult(result);
+                        if (result.wasOk())
+                            safeEditor->refreshPresetList();
+                    });
+            }
+            else if (selection == 4)
+            {
+                const auto directory = safeThis->processor.getPresetManager()
+                    .getPresetsDirectory();
+                const auto result = directory.createDirectory();
+                if (result.failed())
+                {
+                    safeThis->showPresetResult(result);
+                    return;
+                }
+                directory.revealToUser();
             }
         });
 }

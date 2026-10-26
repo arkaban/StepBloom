@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_dsp/juce_dsp.h>
 
 #include "PresetManager.h"
 
@@ -13,6 +14,7 @@ class StepBloomAudioProcessor final : public juce::AudioProcessor
 {
 public:
     static constexpr int waveformFifoCapacity = 524288;
+    static constexpr uint64_t spectrumFifoCapacity = 4096;
     using Parameters = juce::AudioProcessorValueTreeState;
 
     enum class TriggerMode
@@ -53,11 +55,25 @@ public:
     void setStateInformation(const void* data, int sizeInBytes) override;
     uint64_t getLatestWaveformSequence() const noexcept;
     bool readWaveformFrame(uint64_t sequence, WaveformFrame& frame) const noexcept;
+    uint64_t getLatestSpectrumSequence() const noexcept;
+    bool readSpectrumSample(uint64_t sequence, float& sample) const noexcept;
+    void resetCrossoverFilters() noexcept;
     float getCycleDurationMilliseconds() const noexcept;
     PresetManager& getPresetManager() noexcept;
     static float evaluateEnvelope(float phase, float attackPhase, float duckWidth,
                                   float startGain, float curveTension,
                                   float endFadeOffset, float endGain) noexcept;
+    struct ExtraEnvelopeNode
+    {
+        bool active = false;
+        float phase = 0.5f;
+        float gain = 0.5f;
+    };
+    static float evaluateProfileEnvelope(float phase, float attackPhase, float duckWidth,
+                                         float startGain, float curveTension,
+                                         float endFadeOffset, float endGain,
+                                         const std::array<ExtraEnvelopeNode, 2>& extras) noexcept;
+    static void migrateLegacyEnvelopeState(juce::ValueTree state);
 
     Parameters parameters;
     PresetManager presetManager;
@@ -65,12 +81,13 @@ public:
 private:
     static Parameters::ParameterLayout createParameterLayout();
 
-    double fallbackPpq = 0.0;
-    double envelopePhase = 1.0;
+    double envelopePhase = 0.0;
     std::atomic<float> cycleDurationMilliseconds{1000.0f};
-    double smoothedGain = 1.0;
-    double smoothingCoefficient = 0.0;
     bool isPlayingEnvelope = false;
+    TriggerMode lastTriggerMode = TriggerMode::Sync;
+    bool hasTriggerModeState = false;
+    bool hasCrossoverModeState = false;
+    bool lastRequestedMultiband = false;
     bool wasTransportPlaying = false;
     bool hasPreviousHostPpq = false;
     double previousHostPpq = 0.0;
@@ -82,18 +99,35 @@ private:
     std::atomic<float>* thresholdParameter = nullptr;
     std::atomic<float>* holdOffParameter = nullptr;
     std::atomic<float>* triggerModeParameter = nullptr;
-    std::atomic<float>* duckWidthParameter = nullptr;
-    std::atomic<float>* attackTimeParameter = nullptr;
-    std::atomic<float>* minGainParameter = nullptr;
-    std::atomic<float>* releaseTensionParameter = nullptr;
-    std::atomic<float>* endFadeOffsetParameter = nullptr;
-    std::atomic<float>* endGainParameter = nullptr;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedDuckWidth;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedAttackTime;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedMinGain;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedReleaseTension;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedEndFadeOffset;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedEndGain;
+    std::atomic<float>* processingModeParameter = nullptr;
+    struct EnvelopeProfileParameters
+    {
+        std::array<std::atomic<float>*, 6> fixedNodes{};
+        std::array<std::atomic<float>*, 2> extraActive{};
+        std::array<std::atomic<float>*, 2> extraPhase{};
+        std::array<std::atomic<float>*, 2> extraGain{};
+    };
+    std::array<EnvelopeProfileParameters, 4> envelopeProfiles{};
+    std::array<std::array<juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>, 6>, 4>
+        smoothedEnvelopeProfiles;
+    std::atomic<float>* crossoverLowMidParameter = nullptr;
+    std::atomic<float>* crossoverMidHighParameter = nullptr;
+    std::array<std::atomic<float>*, 3> duckAmountParameters{};
+    std::array<std::atomic<float>*, 3> bandBypassParameters{};
+    std::array<std::atomic<float>*, 3> bandSoloParameters{};
+    std::array<juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>, 3>
+        smoothedBandGains;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedModeBlend;
+    using CrossoverFilter = juce::dsp::LinkwitzRileyFilter<float>;
+    std::array<CrossoverFilter, 2> lowMidFilters;
+    std::array<CrossoverFilter, 2> midHighFilters;
+    struct SpectrumSlot
+    {
+        std::atomic<float> sample{0.0f};
+        std::atomic<uint64_t> sequence{0};
+    };
+    std::array<SpectrumSlot, spectrumFifoCapacity> spectrumFifo{};
+    std::atomic<uint64_t> spectrumWriteSequence{0};
     struct WaveformSlot
     {
         std::atomic<float> sidechain{0.0f};

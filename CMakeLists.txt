@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(StepBloom VERSION 1.0.0 LANGUAGES CXX)
+project(StepBloom VERSION 1.0.0 LANGUAGES C CXX)
+
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 include(FetchContent)
 
@@ -10,7 +12,15 @@ FetchContent_Declare(
     GIT_TAG 8.0.8
     GIT_SHALLOW TRUE
 )
-FetchContent_MakeAvailable(JUCE)
+
+FetchContent_Declare(
+    clap-juce-extensions
+    GIT_REPOSITORY https://github.com/free-audio/clap-juce-extensions.git
+    GIT_TAG main
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(JUCE clap-juce-extensions)
 
 juce_add_plugin(StepBloom
     COMPANY_NAME "StepBloom Audio"
@@ -27,6 +37,11 @@ juce_add_plugin(StepBloom
 )
 
 juce_generate_juce_header(StepBloom)
+
+clap_juce_extensions_plugin(TARGET StepBloom
+    CLAP_ID "com.stepbloomaudio.stepbloom"
+    CLAP_FEATURES audio-effect utility
+)
 
 target_sources(StepBloom PRIVATE
     src/PluginProcessor.cpp

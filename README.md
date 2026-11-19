@@ -2,7 +2,7 @@
 
 > **Tempo-Synced Multiband Volume Shaper**
 
-StepBloom is a modern audio plugin designed for precise volume shaping, sidechain ducking, and frequency-conscious dynamics. Featuring both single-band simplicity and precise 3-band crossover processing, StepBloom gives you complete control over your track's dynamic shape and rhythmic groove.
+StepBloom is a lightweight, original VST3 volume shaper designed for precise envelope shaping, sidechain ducking, and frequency-conscious dynamics. Switch seamlessly between Singleband simplicity and 3-band Linkwitz-Riley multiband processing with real-time sidechain and output waveform overlays.
 
 ---
 
@@ -14,71 +14,39 @@ StepBloom is a modern audio plugin designed for precise volume shaping, sidechai
 
 ---
 
-
 ## ✨ Key Features
 
-* **Single & Multiband Processing Modes:** Switch seamlessly between single-band global volume shaping and full 3-band multiband control (`LOW`, `MID`, `HIGH`).
-* **3-Band Crossover Network:** Visual spectrum analyzer with adjustable crossover frequencies from 20 Hz to 20 kHz.
-* **Per-Band Control:** Independent level sliders, **Bypass (`BYP`)**, and **Solo** toggles for `LOW`, `MID`, and `HIGH` frequency bands.
-* **Flexible Envelope Engine:** Interactive node-based curve editing with controls for:
-  * **Start:** Attack / Gain
-  * **Knee:** Width / Tension
-  * **End:** Tail / Gain
-* **14 Quick-Select Curve Presets:** Instant access to pre-defined shapes for instant sidechain ducking, ramps, and custom gating profiles.
-* **Tempo Sync & Timing:** Flexible trigger modes (including `Sync`) and cycle duration options ranging from `1/4` notes to custom rates.
-* **Workflow Tools:** Dedicated **Copy** and **Paste** buttons for copying envelopes between bands, along with preset selection and global `MIX` control.
-
----
-
-## 🎛️ Interface Overview
-
-
-### 1. Global Bar
-* **Presets & Navigation:** Browse or cycle through custom presets using the header dropdown and navigation arrows.
-* **Mode Toggle:** Switch between `SINGLE` and `MULTI` modes.
-* **Global Mix:** 0% to 100% dry/wet balance control.
-* **Trigger & Cycle:** Set sync modes (`Sync`) and timing rates (`1/4`, etc.).
-* **Preset Grid:** 14 quick-select curve shape buttons for immediate sidechain profiles.
-
-### 2. Envelope Editor (`SINGLE` / `MULTI`)
-* **Visual Display:** Real-time visual feedback for the envelope curve overlaid on a dB grid (-inf to 0 dB).
-* **Curve Handles:** Drag nodes to shape attack curves, tension/knee width, and tail release parameters.
-* **Copy / Paste:** Duplicate shape settings across different bands instantly.
-
-### 3. Multiband Crossover Engine (`MULTI` Mode Only)
-* **Frequency Splitter:** Interactive handles to set low/mid and mid/high crossover points across the 20 Hz – 20 kHz spectrum.
-* **Band Controls:**
-  * **LOW:** Amount slider, Bypass, Solo
-  * **MID:** Amount slider, Bypass, Solo
-  * **HIGH:** Amount slider, Bypass, Solo
+- **Singleband & Multiband Processing (`SINGLE` / `MULTI`):** Route the Master envelope full-range (bypassing the crossover DSP) or split audio into independent `LOW`, `MID`, and `HIGH` band profiles with a smooth 3 ms mode crossfade.
+- **4th-Order Linkwitz-Riley Crossover:** Stereo crossover network with draggable Low-Mid and Mid-High handles overlaid on a real-time 2048-point Hann-windowed FFT input spectrum.
+- **Per-Band & Global Controls:** Independent duck amount (`0–100%`), **Bypass (`BYP`)**, and **Solo** toggles for each band, plus a global `MIX` control scaling combined ducking depth.
+- **Precision Node-Based Envelope Engine:**
+  - **Three Fixed Nodes:** **Start** (attack time & start gain), **Recovery** (duck width & curve tension from `0.2` to `1.5`), and **End** (tail fade offset & end gain).
+  - **Extra 2D Nodes:** Double-click empty canvas space to add up to two extra nodes per profile (double-click to remove), or `Ctrl`/`Cmd`-drag to snap to the adaptive phase and gain grid.
+  - **Click-Free Smoothing:** Smooth S-curve attack/tail transitions, tension-shaped power curve recovery, and 3 ms gain smoothing.
+- **Flexible Trigger Modes & Timing:**
+  - **Sync:** Loops to host tempo and position (`1/2`, `1/4`, `1/8`, or `1/16` note durations), holding at unity while stopped to prevent transport-start clicks.
+  - **MIDI Trigger:** Fires once per MIDI note-on.
+  - **Audio Trigger:** Fires once per sidechain threshold crossing with adjustable threshold and retrigger hold-off.
+- **Presets, Curve Thumbnails & Vector Scaling:**
+  - 14 quick-select shape-profile thumbnails in the top strip, plus **Copy** and **Paste** to transfer complete curves across band profiles.
+  - XML preset management defaulting to `Documents/StepBloom/Presets` (with custom folder selection and `default.preset` startup loading).
+  - Vector UI scaling at **75%, 100%, 150%, and 200%** (`840 × 480` in Singleband, `840 × 680` in Multiband) combined with host DPI scaling.
+- **Real-Time Safe DSP:** Lock-free, allocation-free audio thread with atomic FIFO min/max phase binning for transient-accurate waveform rendering.
 
 ---
 
 ## 🛠️ Building from Source
 
 ### Prerequisites
-* **CMake** (3.22 or higher)
-* **C++20** compatible compiler (MSVC on Windows / Clang on macOS / GCC on Linux)
-* **JUCE Framework** (fetched automatically via CMake `FetchContent`)
+- **CMake** (3.22 or higher)
+- **C++20** compatible compiler (GCC/Clang on Linux, Xcode/Clang on macOS, or Visual Studio 2022 with the C++ desktop workload on Windows)
+- **Git** and an internet connection for the first configure (automatically fetches and pins **JUCE 8.0.8**)
 
-### Build Steps
+### Linux / macOS
 
 ```bash
-# Clone the repository
-git clone https://github.com/arkaban/StepBloom.git
+git clone [https://github.com/arkaban/StepBloom.git](https://github.com/arkaban/StepBloom.git)
 cd StepBloom
 
-# Configure build files
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-
-# Build the project
 cmake --build build --config Release --parallel
-```
-
-Built artifacts (`.vst3`, `.component`, or executable) will be generated inside the `build/` folder.
-
----
-
-## 📜 License
-
-Distributed under the MIT License. See `LICENSE` for more information.
